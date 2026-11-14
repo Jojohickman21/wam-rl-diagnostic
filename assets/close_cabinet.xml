@@ -1,0 +1,53 @@
+<!--
+  WACL CloseCabinet (Huang, Seita, Biyik, CoRL 2026, Sec. 4.1): push a cabinet door closed with
+  links 4-6 while the gripper keeps a plate level. Door angle 0 is closed along +x from the hinge; positive
+  opens toward -y, across the front of the robot. Collision bitmasks: arm contype=1/conaffinity=0, environment contype=2/conaffinity=1,
+  so arm-environment pairs collide and arm-arm and environment-environment pairs do not. The door
+  stops on its joint limit, not on the carcass.
+-->
+<mujoco model="close_cabinet">
+  <compiler angle="radian" autolimits="true" meshdir="xarm7/meshes"/>
+  <include file="xarm7/xarm7_wam.xml"/>
+
+  <!-- 1 kHz physics; the env applies one action per 20 steps (50 Hz). -->
+  <option timestep="0.001" integrator="implicitfast" cone="elliptic" impratio="10"/>
+
+  <visual>
+    <global offwidth="960" offheight="720"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="grid" builtin="checker" rgb1="0.25 0.27 0.3" rgb2="0.2 0.22 0.25" width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="5 5" reflectance="0.1"/>
+    <material name="wood" rgba="0.72 0.55 0.36 1"/>
+    <material name="door" rgba="0.85 0.7 0.5 1"/>
+  </asset>
+
+  <default>
+    <default class="env">
+      <geom contype="2" conaffinity="1" condim="3" friction="0.5 0.005 0.0001"
+        solref="0.002 1" solimp="0.95 0.99 0.001 0.5 2"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light pos="0.3 0 2" dir="0 0 -1" directional="true"/>
+    <geom name="floor" class="env" type="plane" size="0 0 0.05" material="grid"/>
+    <camera name="overview" pos="1.25 -0.95 1.15" xyaxes="0.6 0.8 0 -0.48 0.36 0.8"/>
+    <camera name="top" pos="0.35 0.05 2.2" xyaxes="0 -1 0 1 0 0"/>
+
+    <body name="cabinet" pos="0.40 0.06 0.45">
+      <geom name="carcass" class="env" type="box" size="0.11 0.15 0.2" pos="0.11 0.159 0" material="wood"/>
+      <body name="door">
+        <joint name="door_hinge" type="hinge" axis="0 0 -1" range="0 1.75" damping="2" frictionloss="1"
+          armature="0.01"/>
+        <geom name="door" class="env" type="box" size="0.11 0.009 0.2" pos="0.11 0 0" mass="2" material="door"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="home" qpos="-0.75 1.0 0 2.5708 -1.5708 1.925 0  1.2" ctrl="-0.75 1.0 0 2.5708 -1.5708 1.925 0"/>
+  </keyframe>
+</mujoco>
