@@ -67,7 +67,7 @@ script logs every `task/`, `force/` and `reward/` key of the final step's `info`
 | Door | 0.22 m wide, 2 kg, hinge damping 2 N m s/rad, friction loss 1 N m, opens across the front of the robot. Starts at 1.0 to 1.4 rad. Success below 0.05 rad. |
 | Timing | 1 kHz physics, 50 Hz control (`frame_skip` 20), 250-step episodes (5 s). |
 | Action | 7 joint position-target deltas, 0.04 rad per step at full scale (2 rad/s). The target may lead the measured joint by at most 0.1 rad. |
-| Observation (34) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2, plate tilt limit 1 (fixed at 25° except in A7). |
+| Observation (35; 41 in A7) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2, plate tilt limit 1 (25°; in A7 the tray object's slide angle). A7 appends the object's position and velocity in the plate frame, 6. |
 | Contact model | Elliptic cone, `impratio` 10, `condim` 3, friction 0.5, `solref` 0.002 1, `solimp` 0.95 0.99 0.001 0.5 2. |
 
 Why these choices:
@@ -103,6 +103,7 @@ REWARD_DESIGN.md             reward specification and exploit audit
 RESULTS.md                   what has been run and what it showed
 scripts/run_gated_vs_ungated.sh   3 seeds of each env id given on the command line
 scripts/summarize_runs.py    per-run table from runs/
+scripts/calibrate_tray.py    checks the A7 object slides at its drawn friction angle
 ```
 
 ## Training stack

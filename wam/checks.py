@@ -106,3 +106,29 @@ def capsule_coverage(model, body_name, tolerance):
         along = np.clip(rel @ axis, -half, half)
         gap = np.minimum(gap, np.linalg.norm(rel - np.outer(along, axis), axis=1) - radius)
     return float(np.mean(gap <= tolerance))
+
+
+def hold_tray_at(env, seed, fraction):
+    """Tray env: millimetres the cylinder slides in 2 s with the plate held at `fraction` of the
+    episode's slide angle, or inf if it leaves the plate. The plate is tilted with joint 5."""
+    env.reset(seed=seed)
+    target = fraction * env.tilt_max
+    for _ in range(400):
+        if env._plate_tilt() >= target:
+            break
+        env.q_target[4] += np.radians(0.2)
+        env.data.ctrl[:] = env.q_target
+        for _ in range(FRAME_SKIP):
+            mujoco.mj_step(env.model, env.data)
+
+    def slide():
+        up = env._plate_up()
+        offset = env.data.geom_xpos[env.object_geom] - env.data.geom_xpos[env.plate_geom]
+        return offset - (offset @ up) * up
+
+    start = slide()
+    for _ in range(100 * FRAME_SKIP):
+        mujoco.mj_step(env.model, env.data)
+        if env._spilled():
+            return np.inf
+    return 1000 * np.linalg.norm(slide() - start)

@@ -32,6 +32,13 @@ W_ACTION_RATE, W_JOINT_VEL, W_TORQUE = 0.01, 0.001, 0.01
 SUCCESS_BONUS = 20.0
 SPILL_PENALTY = 15.0
 START_TILT = np.radians(2.0)
+
+# A7 tray object: a squat cylinder that slides before it tips (tip angle atan(2r/h) = 56 deg).
+OBJECT_RADIUS, OBJECT_HALF_HEIGHT, OBJECT_MASS = 0.03, 0.02, 0.2  # m, m, kg
+PLATE_RADIUS, PLATE_HALF_THICKNESS = 0.09, 0.004  # must match the plate geom in xarm7_wam.xml
+SLIDE_ANGLE_RANGE = (np.radians(15.0), np.radians(35.0))
+# Below this the arm can pin the cylinder against the floor and crush it 15 mm into it.
+MIN_TRAY_HEIGHT = 0.15  # m, plate centre at reset
 REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "success", "spill")
 
 CONTACT_GROUPS = ("upper", "link4", "link5", "link6", "ee")
@@ -45,25 +52,43 @@ class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
-                 level_gate=False, tilt_barrier=False, tilt_limit_range=None):
+                 level_gate=False, tilt_barrier=False, tray_object=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
         `tilt_barrier` (A5) replaces the linear tilt penalty with a quadratic one that reaches
         W_BARRIER per step at the spill limit.
-        `tilt_limit_range` (A7) is (low, high) in radians: the spill limit is drawn uniformly from
-        it every episode and observed. None keeps it at TILT_MAX.
+        `tray_object` (A7) puts a free cylinder on the plate. The plate constraint becomes physical:
+        the episode spills when the cylinder leaves the plate, and there is no tilt penalty. The
+        cylinder's friction is drawn each episode so that it starts to slide on a static plate at
+        an angle between 15 and 35 degrees; that angle replaces the 25 degree limit in the
+        observation, and the cylinder's position and velocity in the plate frame are appended.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
         """
-        self.model = mujoco.MjModel.from_xml_path(str(SCENE))
+        spec = mujoco.MjSpec.from_file(str(SCENE))
+        if tray_object:
+            body = spec.worldbody.add_body(name="tray_object")
+            body.add_freejoint()
+            body.add_geom(
+                name="tray_object", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                size=[OBJECT_RADIUS, OBJECT_HALF_HEIGHT, 0], mass=OBJECT_MASS, rgba=[0.9, 0.6, 0.1, 1],
+                contype=1, conaffinity=1, condim=3, solref=[0.002, 1], solimp=[0.95, 0.99, 0.001, 0.5, 2],
+                # Higher priority makes the contact use this geom's friction, not the max of both.
+                priority=1,
+            )
+            # Without both, soft-contact creep slides the cylinder off at about 60% of its
+            # friction angle; with them it holds at 90% and slides at 110% (scripts/calibrate_tray.py).
+            spec.option.noslip_iterations = 10
+            spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+        self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
         self.gated = gated
         self.level_gate = level_gate
         self.tilt_barrier = tilt_barrier
-        self.tilt_limit_range = tilt_limit_range
+        self.tray_object = tray_object
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
@@ -73,6 +98,11 @@ class CloseCabinetEnv(gym.Env):
         self.ctrl_range = self.model.actuator_ctrlrange.copy()
         self.door_geom = self.model.geom("door").id
         self.link7 = self.model.body("link7").id
+        self.plate_geom = self.model.geom("plate").id
+        self.object_geom = self.model.geom("tray_object").id if tray_object else -1
+        if tray_object:
+            joint = self.model.joint(self.model.body("tray_object").jntadr[0])
+            self.object_qpos, self.object_qvel = joint.qposadr[0], joint.dofadr[0]
         self.door_body = self.model.body("door").id
         self.cabinet_body = self.model.body("cabinet").id
         self.cabinet_home = self.model.body_pos[self.cabinet_body].copy()
@@ -92,7 +122,7 @@ class CloseCabinetEnv(gym.Env):
         ]
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (35,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (41 if tray_object else 35,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
 
@@ -101,8 +131,9 @@ class CloseCabinetEnv(gym.Env):
         mujoco.mj_resetData(self.model, self.data)
         shift, turn = self.cabinet_spread
         self.cabinet_yaw = self.np_random.uniform(-turn, turn)
-        if self.tilt_limit_range is not None:
-            self.tilt_max = self.np_random.uniform(*self.tilt_limit_range)
+        if self.tray_object:
+            self.tilt_max = self.np_random.uniform(*SLIDE_ANGLE_RANGE)
+            self.model.geom_friction[self.object_geom, 0] = np.tan(self.tilt_max)
         self.model.body_pos[self.cabinet_body] = self.cabinet_home + np.append(
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
@@ -112,8 +143,11 @@ class CloseCabinetEnv(gym.Env):
             spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
             self.data.qpos[:7] = np.clip(self.home[:7] + spread, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
             self._level_plate()
+            if self.tray_object:
+                self._place_object()
             mujoco.mj_forward(self.model, self.data)
-            if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door():
+            tray_clear = not self.tray_object or self.data.geom_xpos[self.plate_geom][2] > MIN_TRAY_HEIGHT
+            if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door() and tray_clear:
                 break
         self.q_target = self.data.qpos[:7].copy()
         self.data.ctrl[:] = self.q_target
@@ -171,7 +205,7 @@ class CloseCabinetEnv(gym.Env):
         excess = max(tilt - TILT_FREE, 0.0)
         if self.tilt_barrier:
             terms["tilt"] = -W_BARRIER * (excess / (self.tilt_max - TILT_FREE)) ** 2
-        else:
+        elif not self.tray_object:
             terms["tilt"] = -W_TILT * excess
         terms["force"] = -W_FORCE * min(max(allowed + wrong - F_MAX, 0.0) / F_MAX, 1.0)
         terms["smooth"] = -(
@@ -183,7 +217,7 @@ class CloseCabinetEnv(gym.Env):
             earned = self.valid_closing if self.gated else self.closing
             terms["success"] = SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
             return terms, True
-        if tilt > self.tilt_max:
+        if self._spilled():
             terms["spill"] = -SPILL_PENALTY
             return terms, True
         return terms, False
@@ -202,17 +236,28 @@ class CloseCabinetEnv(gym.Env):
     def _obs(self):
         q, qvel = self.data.qpos, self.data.qvel
         hinge = self.model.body_pos[self.cabinet_body][:2]
-        return np.concatenate([
+        obs = [
             q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action,
             hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)], [self.tilt_max],
-        ]).astype(np.float32)
+        ]
+        if self.tray_object:
+            to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
+            offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
+            velocity = qvel[self.object_qvel : self.object_qvel + 3]
+            obs += [to_plate @ offset, to_plate @ velocity]
+        return np.concatenate(obs).astype(np.float32)
 
     def _contact_forces(self):
-        """Normal force (N) on the door from each arm group, then arm force on the rest of the scene."""
+        """Normal force (N) on the door from each arm group, then arm force on the rest of the scene.
+
+        Contacts with the tray object are not arm contacts and are left out.
+        """
         forces = np.zeros(len(CONTACT_GROUPS) + 1)
         wrench = np.zeros(6)
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
+            if self.object_geom in (contact.geom1, contact.geom2):
+                continue
             mujoco.mj_contactForce(self.model, self.data, i, wrench)
             if contact.geom1 == self.door_geom:
                 forces[self.geom_group[contact.geom2]] += wrench[0]
@@ -236,6 +281,32 @@ class CloseCabinetEnv(gym.Env):
             self.data.qpos[4:7] = np.clip(
                 self.data.qpos[4:7] + step, self.ctrl_range[4:, 0], self.ctrl_range[4:, 1]
             )
+
+    def _plate_up(self):
+        """Unit normal of the plate's upper face (the plate is levelled with either face up)."""
+        axis = self.data.geom_xmat[self.plate_geom].reshape(3, 3)[:, 2]
+        return axis if axis[2] >= 0.0 else -axis
+
+    def _place_object(self):
+        """Stand the cylinder on the plate's centre, 1 mm clear so the start is out of contact."""
+        mujoco.mj_kinematics(self.model, self.data)
+        up = self._plate_up()
+        lift = PLATE_HALF_THICKNESS + OBJECT_HALF_HEIGHT + 0.001
+        self.data.qpos[self.object_qpos : self.object_qpos + 3] = (
+            self.data.geom_xpos[self.plate_geom] + lift * up
+        )
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, self.data.geom_xmat[self.plate_geom])
+        self.data.qpos[self.object_qpos + 3 : self.object_qpos + 7] = quat
+
+    def _spilled(self):
+        """Tray mode: the cylinder's centre has left the cylinder above the plate. Otherwise: tilt."""
+        if not self.tray_object:
+            return self._plate_tilt() > self.tilt_max
+        up = self._plate_up()
+        offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
+        height = offset @ up
+        return bool(np.linalg.norm(offset - height * up) > PLATE_RADIUS or not 0.0 < height < 0.1)
 
     def _outside_door(self):
         """True when links 4-7 and the plate are all on the side of the door that closes it.
@@ -271,7 +342,7 @@ class CloseCabinetEnv(gym.Env):
         info["task/success"] = float(self.data.qpos[7] < SUCCESS_ANGLE)
         info["task/valid_fraction"] = self.valid_closing / self.closing if self.closing > 1e-6 else 0.0
         info["task/wrong_contact_steps"] = float(self.wrong_contact_steps)
-        info["task/spill"] = float(self._plate_tilt() > self.tilt_max)
+        info["task/spill"] = float(self._spilled())
         info["task/tilt_limit"] = float(self.tilt_max)
         info["task/plate_tilt"] = self._plate_tilt()
         info["task/penetration"] = float(penetration)

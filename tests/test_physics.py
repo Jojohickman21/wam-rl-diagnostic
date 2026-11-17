@@ -135,21 +135,51 @@ def test_level_gate_withholds_progress_while_plate_is_tilted():
     assert results[True] == 0
 
 
-def test_random_tilt_limit_is_observed_and_ends_the_episode():
-    env = gym.make("WamCloseCabinetRandomPoseCoupledLimit-v0")
-    limits = []
-    for seed in range(30):
-        obs, info = env.reset(seed=seed)
-        assert obs[-1] == pytest.approx(info["task/tilt_limit"])
-        limits.append(np.degrees(info["task/tilt_limit"]))
-    assert 15 <= min(limits) and max(limits) <= 35 and np.ptp(limits) > 10
-
-    env.reset(seed=0)
-    inner = env.unwrapped
-    inner.tilt_max = np.radians(15)
-    inner.data.qpos[4] += 0.35
-    inner.q_target[4] += 0.35
-    _, _, terminated, _, info = env.step(np.zeros(7, np.float32))
-    assert 15 < np.degrees(info["task/plate_tilt"]) < 25
-    assert terminated and info["task/spill"] == 1.0
+@pytest.fixture
+def tray_env():
+    env = gym.make("WamCloseCabinetRandomPoseTray-v0")
+    yield env
     env.close()
+
+
+def test_tray_object_starts_on_plate_with_observed_slide_angle(tray_env):
+    env = tray_env.unwrapped
+    angles = []
+    for seed in range(30):
+        obs, info = tray_env.reset(seed=seed)
+        assert obs.shape == tray_env.observation_space.shape == (41,)
+        assert env.data.ncon == 0 and not env._spilled()
+        assert env.data.geom_xpos[env.plate_geom][2] > 0.15
+        assert obs[-7] == pytest.approx(info["task/tilt_limit"])
+        assert np.tan(obs[-7]) == pytest.approx(env.model.geom_friction[env.object_geom, 0], rel=1e-5)
+        angles.append(np.degrees(obs[-7]))
+    assert 15 <= min(angles) and max(angles) <= 35 and np.ptp(angles) > 10
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_tray_object_slides_at_its_drawn_angle(seed):
+    from wam.close_cabinet import CloseCabinetEnv
+
+    env = CloseCabinetEnv(tray_object=True)
+    assert checks.hold_tray_at(env, seed, 0.95) < 1.0
+    assert np.isinf(checks.hold_tray_at(env, seed, 1.05))
+
+
+def test_tray_random_actions_stay_finite_and_shallow(tray_env):
+    stats = checks.run_random(tray_env, n_actions=5_000)
+    assert stats["nonfinite"] == 0
+    assert stats["solver_warnings"] == 0
+    # The plate strikes the loose 0.2 kg cylinder under bang-bang actions; arm-scene pairs stay
+    # under 2 mm (verified 2026-11-17), the plate-cylinder pair reaches 2.8 mm.
+    assert stats["max_penetration"] < 0.003
+
+
+def test_tray_mode_has_no_tilt_penalty_and_spills_only_when_object_leaves(tray_env):
+    env = tray_env.unwrapped
+    tray_env.reset(seed=0)
+    for _ in range(25):
+        _, _, terminated, _, info = tray_env.step(np.zeros(7, np.float32))
+    assert info["reward/tilt"] == 0.0 and not terminated
+    env.data.qpos[env.object_qpos : env.object_qpos + 3] += [0.0, 0.0, -1.0]
+    _, _, terminated, _, info = tray_env.step(np.zeros(7, np.float32))
+    assert terminated and info["task/spill"] == 1.0 and info["reward/spill"] == -15.0

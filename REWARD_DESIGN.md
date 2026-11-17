@@ -139,7 +139,7 @@ Not blocked by the reward: links 5 and 6 are wrist joints on the xArm 7 and are 
 | A4 | Gate progress on the plate being level: gₜ also requires αₜ < α_free | Does coupling the two tasks in the reward cut spills without stalling? |
 | A5 | Quadratic tilt barrier: r_tilt = −1 · ([αₜ − α_free]₊ / (α_max − α_free))² per step, in place of the linear term | Does a gradient that steepens toward the limit warn the value function in time? |
 | A6 | A4 + A5 | The two together. Env `WamCloseCabinetRandomPoseCoupled-v0`; A5 alone is `...RandomPoseBarrier-v0`. |
-| A7 | A6, with the spill limit α_max drawn from 15° to 35° each episode and appended to the observation; the barrier scales to it | Does the policy learn to keep margin from whatever limit it is given, instead of fitting one threshold? Read success and spill binned by α_max. Env `WamCloseCabinetRandomPoseCoupledLimit-v0`. |
+| A7 | Make the plate constraint physical. A free cylinder (r 3 cm, h 4 cm, 0.2 kg) stands on the plate; the episode spills (−15, terminate) when its centre leaves the plate. No tilt penalty, no level gate: the only plate signal is whether the object is still on it. Its friction is drawn each episode so it slides at 15° to 35° on a static plate, and that angle is observed with the object's position and velocity in the plate frame. Door terms are unchanged (contact gate on). | Does a physical constraint with nothing to overfit couple the two tasks better than a tilt metric? Compare spill and success against section 3 of RESULTS.md, and read spill binned by slide angle. Env `WamCloseCabinetRandomPoseTray-v0`. |
 
 ## Reading the result
 

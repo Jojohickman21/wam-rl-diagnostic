@@ -59,12 +59,8 @@ gym.register(
     },
 )
 gym.register(
-    id="WamCloseCabinetRandomPoseCoupledLimit-v0",
+    id="WamCloseCabinetRandomPoseTray-v0",
     entry_point="wam.close_cabinet:CloseCabinetEnv",
     max_episode_steps=250,
-    kwargs={
-        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)),
-        "tilt_barrier": True, "level_gate": True,
-        "tilt_limit_range": (np.radians(15), np.radians(35)),
-    },
+    kwargs={"start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True},
 )
