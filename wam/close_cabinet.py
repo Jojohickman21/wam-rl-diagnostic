@@ -43,13 +43,18 @@ BODY_GROUP = {
 class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
-    def __init__(self, render_mode=None, gated=True, start_spread=0.02):
-        """`start_spread` is the half-width (rad) of the uniform draw around home on every joint."""
+    def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0)):
+        """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
+
+        `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
+        square of that half-width in x and y and turned about z by up to that angle.
+        """
         self.model = mujoco.MjModel.from_xml_path(str(SCENE))
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
         self.gated = gated
         self.start_spread = start_spread
+        self.cabinet_spread = cabinet_spread
         self.renderer = None
 
         self.home = self.model.key("home").qpos.copy()
@@ -57,6 +62,8 @@ class CloseCabinetEnv(gym.Env):
         self.door_geom = self.model.geom("door").id
         self.link7 = self.model.body("link7").id
         self.door_body = self.model.body("door").id
+        self.cabinet_body = self.model.body("cabinet").id
+        self.cabinet_home = self.model.body_pos[self.cabinet_body].copy()
         self.torque_limit = self.model.actuator_forcerange[:, 1].copy()
         self.geom_group = np.full(self.model.ngeom, -1)
         for geom in range(self.model.ngeom):
@@ -73,13 +80,19 @@ class CloseCabinetEnv(gym.Env):
         ]
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (30,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (34,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)
+        shift, turn = self.cabinet_spread
+        self.cabinet_yaw = self.np_random.uniform(-turn, turn)
+        self.model.body_pos[self.cabinet_body] = self.cabinet_home + np.append(
+            self.np_random.uniform(-shift, shift, 2), 0.0
+        )
+        mujoco.mju_axisAngle2Quat(self.model.body_quat[self.cabinet_body], [0.0, 0.0, 1.0], self.cabinet_yaw)
         while True:
             self.data.qpos[7] = self.np_random.uniform(1.0, 1.4)
             spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
@@ -170,9 +183,11 @@ class CloseCabinetEnv(gym.Env):
 
     def _obs(self):
         q, qvel = self.data.qpos, self.data.qvel
-        return np.concatenate(
-            [q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action]
-        ).astype(np.float32)
+        hinge = self.model.body_pos[self.cabinet_body][:2]
+        return np.concatenate([
+            q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action,
+            hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)],
+        ]).astype(np.float32)
 
     def _contact_forces(self):
         """Normal force (N) on the door from each arm group, then arm force on the rest of the scene."""

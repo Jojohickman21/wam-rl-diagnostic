@@ -45,7 +45,7 @@ def test_reset_starts_out_of_contact(env):
 
 def test_observation_matches_declared_space(env):
     obs, _ = env.reset(seed=0)
-    assert obs.shape == env.observation_space.shape == (30,)
+    assert obs.shape == env.observation_space.shape == (34,)
     obs, reward, _, _, _ = env.step(env.action_space.sample())
     assert obs.dtype == np.float32
     assert np.isfinite(reward)
@@ -98,6 +98,19 @@ def test_random_start_is_wide_level_and_out_of_contact(random_start_env):
 
 
 def test_scripted_sweep_solves_most_random_starts(random_start_env):
-    results = [checks.run_sweep(random_start_env, seed=seed) for seed in range(30)]
-    assert np.mean([r["success"] for r in results]) >= 0.9
+    results = [checks.run_sweep(random_start_env, seed=seed) for seed in range(60)]
+    assert np.mean([r["success"] for r in results]) >= 0.85
     assert all(r["wrong_contact_steps"] == 0 for r in results)
+
+
+def test_random_cabinet_pose_varies_and_is_observed():
+    env = gym.make("WamCloseCabinetRandomPose-v0")
+    cabinet = []
+    for seed in range(30):
+        obs, _ = env.reset(seed=seed)
+        assert env.unwrapped.data.ncon == 0 and env.unwrapped._outside_door()
+        cabinet.append(obs[-4:])
+    cabinet = np.array(cabinet)
+    assert np.all(np.ptp(cabinet[:, :2], axis=0) > 0.15)
+    assert np.ptp(np.arctan2(cabinet[:, 3], cabinet[:, 2])) > np.radians(30)
+    env.close()

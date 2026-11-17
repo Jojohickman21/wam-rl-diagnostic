@@ -71,3 +71,13 @@ match the scripted baseline's 5% spill rate, so they come from the transit, not 
 The whole-arm constraint has not bound in either experiment. To make it bind, the end-effector
 has to be the shorter path: randomise the cabinet pose, or start with the plate between the arm
 and the door.
+
+## 3. Randomised cabinet pose: gated vs ungated (pending)
+
+Command: `sh scripts/run_gated_vs_ungated.sh RandomPose`
+
+`WamCloseCabinetRandomPose-v0` adds to the randomised start a cabinet shifted by up to 10 cm in
+x and y and turned by up to 20 degrees about the hinge. The hinge position and yaw are appended
+to the observation. The scripted base-yaw sweep now succeeds on 43 of 100 starts (10 spills, the
+rest stop with the door about 0.3 rad open), so the one-joint solution of sections 1 and 2 is
+gone. Whether every start is feasible for a full-arm policy was not established.
