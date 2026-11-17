@@ -41,7 +41,7 @@ of them because nothing pays it to keep the link on the door. Roughly 100 episod
 valid fraction 0 and fail; their count is identical across conditions and they are consistent
 with early training, which was not checked by step index.
 
-## 2. Randomised start: gated vs ungated (pending)
+## 2. Randomised start: gated vs ungated (2026-11-16)
 
 Command: `sh scripts/run_gated_vs_ungated.sh RandomStart`
 
@@ -49,3 +49,25 @@ Command: `sh scripts/run_gated_vs_ungated.sh RandomStart`
 the wrist, and rejects starts that touch anything or sit between the door and the cabinet. The
 forearm starts 1 to 40 cm from the door (13 to 21 cm on the fixed start). A scripted
 drive-to-home-then-sweep closes the door from 95 of 100 such starts, so the starts are feasible.
+
+| Condition | Seed | Success | Valid fraction | Spill | Episode length | Steps to 90% success | Episodes with any end-effector force |
+|---|---|---|---|---|---|---|---|
+| Gated | 1 | 0.976 | 0.998 | 0.024 | 44 | 67k | 0 |
+| Gated | 2 | 0.976 | 0.993 | 0.024 | 45 | 83k | 0 |
+| Gated | 3 | 0.962 | 0.996 | 0.042 | 44 | 66k | 0 |
+| Ungated (A0) | 1 | 0.980 | 0.997 | 0.020 | 45 | 83k | 0.008 |
+| Ungated (A0) | 2 | 0.968 | 0.999 | 0.032 | 44 | 62k | 0 |
+| Ungated (A0) | 3 | 0.974 | 0.994 | 0.026 | 44 | 64k | 0 |
+
+**Finding.** Still no difference between conditions. Success drops from 100% to 96 to 98% and
+every failure is a plate spill, which ends the episode. Learning takes about twice as long
+(62k to 83k steps to 90%). The ungated policy used the end-effector on the door in 0.8% of
+episodes for one seed and never otherwise.
+
+**Reading.** Widening the start by 0.5 rad per joint did not make the plate a competitive tool:
+the arm's geometry still puts the forearm on the door's path from almost every start, and the
+scripted sweep already solved 95% of these starts. The spills are the new failure mode and they
+match the scripted baseline's 5% spill rate, so they come from the transit, not from the push.
+The whole-arm constraint has not bound in either experiment. To make it bind, the end-effector
+has to be the shorter path: randomise the cabinet pose, or start with the plate between the arm
+and the door.
