@@ -40,13 +40,16 @@ def run_sweep(env, seed=0, on_step=None):
     forces, angles = [], [env.unwrapped.data.qpos[7]]
     tilt = penetration = 0.0
     for step in range(SWEEP_STEPS + SETTLE_STEPS):
-        _, _, _, _, info = env.step(sweep if step < SWEEP_STEPS else np.zeros(7, np.float32))
+        action = sweep if step < SWEEP_STEPS else np.zeros(7, np.float32)
+        _, _, terminated, _, info = env.step(action)
         forces.append([info[key] for key in keys])
         angles.append(info["task/door_angle"])
         tilt = max(tilt, info["task/plate_tilt"])
         penetration = max(penetration, info["task/penetration"])
         if on_step is not None:
             on_step()
+        if terminated:
+            break
     forces, angles = np.array(forces), np.array(angles)
     pushing = slice(np.argmax(np.diff(angles) < -1e-4), np.argmax(angles < SUCCESS_ANGLE))
     forearm = forces[pushing, keys.index("force/door_link5")]
@@ -60,6 +63,7 @@ def run_sweep(env, seed=0, on_step=None):
         "max_plate_tilt_deg": float(np.degrees(tilt)),
         "max_penetration": penetration,
         "solver_warnings": int(sum(w.number for w in env.unwrapped.data.warning)),
+        "returns": {key: value for key, value in info.items() if key.startswith("reward/")},
     }
 
 

@@ -46,9 +46,31 @@ def test_reset_starts_out_of_contact(env):
 def test_observation_matches_declared_space(env):
     obs, _ = env.reset(seed=0)
     assert obs.shape == env.observation_space.shape == (30,)
-    obs, reward, terminated, truncated, _ = env.step(env.action_space.sample())
+    obs, reward, _, _, _ = env.step(env.action_space.sample())
     assert obs.dtype == np.float32
-    assert reward == 0.0 and not terminated and not truncated
+    assert np.isfinite(reward)
+
+
+def test_forearm_sweep_earns_full_progress_and_success_bonus(env):
+    stats = checks.run_sweep(env)
+    returns = stats["returns"]
+    assert returns["reward/progress"] == pytest.approx(50 * (stats["door_start"] - stats["door_end"]), rel=0.02)
+    assert returns["reward/success"] == pytest.approx(20, rel=0.02)
+    assert 3.5 < returns["reward/reach"] < 4.5
+    assert returns["reward/wrong"] == 0 and returns["reward/spill"] == 0
+    assert returns["reward/smooth"] > -5
+
+
+@pytest.mark.parametrize("env_id,pays", [("WamCloseCabinet-v0", False), ("WamCloseCabinetUngated-v0", True)])
+def test_door_closing_without_arm_contact_pays_only_when_ungated(env_id, pays):
+    env = gym.make(env_id)
+    env.reset(seed=0)
+    env.unwrapped.data.qvel[7] = -3.0
+    _, _, _, _, info = env.step(np.zeros(7, np.float32))
+    assert info["task/door_angle"] < env.unwrapped.start_angle - 0.01
+    assert (info["reward/progress"] > 0) == pays
+    assert info["task/valid_fraction"] == 0
+    env.close()
 
 
 @pytest.mark.parametrize("link", ["link4", "link5", "link6"])

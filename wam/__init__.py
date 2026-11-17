@@ -12,3 +12,9 @@ gym.register(
     entry_point="wam.close_cabinet:CloseCabinetEnv",
     max_episode_steps=250,
 )
+gym.register(
+    id="WamCloseCabinetUngated-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={"gated": False},
+)
