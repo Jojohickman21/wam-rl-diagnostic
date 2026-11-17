@@ -139,6 +139,7 @@ Not blocked by the reward: links 5 and 6 are wrist joints on the xArm 7 and are 
 | A4 | Gate progress on the plate being level: gₜ also requires αₜ < α_free | Does coupling the two tasks in the reward cut spills without stalling? |
 | A5 | Quadratic tilt barrier: r_tilt = −1 · ([αₜ − α_free]₊ / (α_max − α_free))² per step, in place of the linear term | Does a gradient that steepens toward the limit warn the value function in time? |
 | A6 | A4 + A5 | The two together. Env `WamCloseCabinetRandomPoseCoupled-v0`; A5 alone is `...RandomPoseBarrier-v0`. |
+| A7 | A6, with the spill limit α_max drawn from 15° to 35° each episode and appended to the observation; the barrier scales to it | Does the policy learn to keep margin from whatever limit it is given, instead of fitting one threshold? Read success and spill binned by α_max. Env `WamCloseCabinetRandomPoseCoupledLimit-v0`. |
 
 ## Reading the result
 

@@ -67,7 +67,7 @@ script logs every `task/`, `force/` and `reward/` key of the final step's `info`
 | Door | 0.22 m wide, 2 kg, hinge damping 2 N m s/rad, friction loss 1 N m, opens across the front of the robot. Starts at 1.0 to 1.4 rad. Success below 0.05 rad. |
 | Timing | 1 kHz physics, 50 Hz control (`frame_skip` 20), 250-step episodes (5 s). |
 | Action | 7 joint position-target deltas, 0.04 rad per step at full scale (2 rad/s). The target may lead the measured joint by at most 0.1 rad. |
-| Observation (34) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2. |
+| Observation (34) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2, plate tilt limit 1 (fixed at 25° except in A7). |
 | Contact model | Elliptic cone, `impratio` 10, `condim` 3, friction 0.5, `solref` 0.002 1, `solimp` 0.95 0.99 0.001 0.5 2. |
 
 Why these choices:

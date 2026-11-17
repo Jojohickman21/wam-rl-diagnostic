@@ -45,7 +45,7 @@ def test_reset_starts_out_of_contact(env):
 
 def test_observation_matches_declared_space(env):
     obs, _ = env.reset(seed=0)
-    assert obs.shape == env.observation_space.shape == (34,)
+    assert obs.shape == env.observation_space.shape == (35,)
     obs, reward, _, _, _ = env.step(env.action_space.sample())
     assert obs.dtype == np.float32
     assert np.isfinite(reward)
@@ -109,7 +109,7 @@ def test_random_cabinet_pose_varies_and_is_observed():
     for seed in range(30):
         obs, _ = env.reset(seed=seed)
         assert env.unwrapped.data.ncon == 0 and env.unwrapped._outside_door()
-        cabinet.append(obs[-4:])
+        cabinet.append(obs[-5:-1])
     cabinet = np.array(cabinet)
     assert np.all(np.ptp(cabinet[:, :2], axis=0) > 0.15)
     assert np.ptp(np.arctan2(cabinet[:, 3], cabinet[:, 2])) > np.radians(30)
@@ -133,3 +133,23 @@ def test_level_gate_withholds_progress_while_plate_is_tilted():
         results[level_gate] = info["reward/progress"]
     assert results[False] > 0
     assert results[True] == 0
+
+
+def test_random_tilt_limit_is_observed_and_ends_the_episode():
+    env = gym.make("WamCloseCabinetRandomPoseCoupledLimit-v0")
+    limits = []
+    for seed in range(30):
+        obs, info = env.reset(seed=seed)
+        assert obs[-1] == pytest.approx(info["task/tilt_limit"])
+        limits.append(np.degrees(info["task/tilt_limit"]))
+    assert 15 <= min(limits) and max(limits) <= 35 and np.ptp(limits) > 10
+
+    env.reset(seed=0)
+    inner = env.unwrapped
+    inner.tilt_max = np.radians(15)
+    inner.data.qpos[4] += 0.35
+    inner.q_target[4] += 0.35
+    _, _, terminated, _, info = env.step(np.zeros(7, np.float32))
+    assert 15 < np.degrees(info["task/plate_tilt"]) < 25
+    assert terminated and info["task/spill"] == 1.0
+    env.close()

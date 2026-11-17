@@ -26,7 +26,7 @@ W_PROGRESS = 50.0  # per rad
 W_REACH = 5.0
 W_WRONG = 0.5  # per step
 W_TILT = 2.0  # per rad per step
-W_BARRIER = 1.0  # per step at TILT_MAX
+W_BARRIER = 1.0  # per step at the spill limit
 W_FORCE = 0.5  # per step
 W_ACTION_RATE, W_JOINT_VEL, W_TORQUE = 0.01, 0.001, 0.01
 SUCCESS_BONUS = 20.0
@@ -45,12 +45,14 @@ class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
-                 level_gate=False, tilt_barrier=False):
+                 level_gate=False, tilt_barrier=False, tilt_limit_range=None):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
         `tilt_barrier` (A5) replaces the linear tilt penalty with a quadratic one that reaches
-        W_BARRIER per step at TILT_MAX.
+        W_BARRIER per step at the spill limit.
+        `tilt_limit_range` (A7) is (low, high) in radians: the spill limit is drawn uniformly from
+        it every episode and observed. None keeps it at TILT_MAX.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -61,6 +63,8 @@ class CloseCabinetEnv(gym.Env):
         self.gated = gated
         self.level_gate = level_gate
         self.tilt_barrier = tilt_barrier
+        self.tilt_limit_range = tilt_limit_range
+        self.tilt_max = TILT_MAX
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
         self.renderer = None
@@ -88,7 +92,7 @@ class CloseCabinetEnv(gym.Env):
         ]
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (34,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (35,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
 
@@ -97,6 +101,8 @@ class CloseCabinetEnv(gym.Env):
         mujoco.mj_resetData(self.model, self.data)
         shift, turn = self.cabinet_spread
         self.cabinet_yaw = self.np_random.uniform(-turn, turn)
+        if self.tilt_limit_range is not None:
+            self.tilt_max = self.np_random.uniform(*self.tilt_limit_range)
         self.model.body_pos[self.cabinet_body] = self.cabinet_home + np.append(
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
@@ -164,7 +170,7 @@ class CloseCabinetEnv(gym.Env):
         terms["wrong"] = -W_WRONG * (self.gated and wrong > 0.0)
         excess = max(tilt - TILT_FREE, 0.0)
         if self.tilt_barrier:
-            terms["tilt"] = -W_BARRIER * (excess / (TILT_MAX - TILT_FREE)) ** 2
+            terms["tilt"] = -W_BARRIER * (excess / (self.tilt_max - TILT_FREE)) ** 2
         else:
             terms["tilt"] = -W_TILT * excess
         terms["force"] = -W_FORCE * min(max(allowed + wrong - F_MAX, 0.0) / F_MAX, 1.0)
@@ -177,7 +183,7 @@ class CloseCabinetEnv(gym.Env):
             earned = self.valid_closing if self.gated else self.closing
             terms["success"] = SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
             return terms, True
-        if tilt > TILT_MAX:
+        if tilt > self.tilt_max:
             terms["spill"] = -SPILL_PENALTY
             return terms, True
         return terms, False
@@ -198,7 +204,7 @@ class CloseCabinetEnv(gym.Env):
         hinge = self.model.body_pos[self.cabinet_body][:2]
         return np.concatenate([
             q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action,
-            hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)],
+            hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)], [self.tilt_max],
         ]).astype(np.float32)
 
     def _contact_forces(self):
@@ -265,7 +271,8 @@ class CloseCabinetEnv(gym.Env):
         info["task/success"] = float(self.data.qpos[7] < SUCCESS_ANGLE)
         info["task/valid_fraction"] = self.valid_closing / self.closing if self.closing > 1e-6 else 0.0
         info["task/wrong_contact_steps"] = float(self.wrong_contact_steps)
-        info["task/spill"] = float(self._plate_tilt() > TILT_MAX)
+        info["task/spill"] = float(self._plate_tilt() > self.tilt_max)
+        info["task/tilt_limit"] = float(self.tilt_max)
         info["task/plate_tilt"] = self._plate_tilt()
         info["task/penetration"] = float(penetration)
         info.update({f"reward/{name}": float(value) for name, value in self.returns.items()})
