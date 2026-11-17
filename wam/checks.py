@@ -32,16 +32,28 @@ def run_random(env, n_actions, seed=0):
 
 
 def run_sweep(env, seed=0, on_step=None):
-    """Open-loop forearm sweep: constant base-yaw rate, every other joint target held at home."""
+    """Forearm sweep: constant base-yaw rate, every other joint target held at home.
+
+    From a start away from home the arm first drives its joint targets to home at full rate.
+    The sweep itself is open loop.
+    """
     env.reset(seed=seed)
+    home = env.unwrapped.home[:7]
     sweep = np.zeros(7, np.float32)
     sweep[0] = SWEEP_RATE * FRAME_SKIP * env.unwrapped.model.opt.timestep / ACTION_SCALE
     keys = [f"force/door_{g}" for g in CONTACT_GROUPS] + ["force/scene"]
     forces, angles = [], [env.unwrapped.data.qpos[7]]
     tilt = penetration = 0.0
-    for step in range(SWEEP_STEPS + SETTLE_STEPS):
-        action = sweep if step < SWEEP_STEPS else np.zeros(7, np.float32)
-        _, _, terminated, _, info = env.step(action)
+    sweep_steps = 0
+    truncated = False
+    while sweep_steps < SWEEP_STEPS + SETTLE_STEPS and not truncated:
+        to_home = home - env.unwrapped.q_target
+        if sweep_steps == 0 and np.abs(to_home).max() > ACTION_SCALE:
+            action = np.clip(to_home / ACTION_SCALE, -1.0, 1.0).astype(np.float32)
+        else:
+            action = sweep if sweep_steps < SWEEP_STEPS else np.zeros(7, np.float32)
+            sweep_steps += 1
+        _, _, terminated, truncated, info = env.step(action)
         forces.append([info[key] for key in keys])
         angles.append(info["task/door_angle"])
         tilt = max(tilt, info["task/plate_tilt"])
@@ -63,6 +75,10 @@ def run_sweep(env, seed=0, on_step=None):
         "max_plate_tilt_deg": float(np.degrees(tilt)),
         "max_penetration": penetration,
         "solver_warnings": int(sum(w.number for w in env.unwrapped.data.warning)),
+        "success": bool(info["task/success"]),
+        "spill": bool(info["task/spill"]),
+        "valid_fraction": info["task/valid_fraction"],
+        "wrong_contact_steps": info["task/wrong_contact_steps"],
         "returns": {key: value for key, value in info.items() if key.startswith("reward/")},
     }
 

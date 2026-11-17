@@ -76,3 +76,28 @@ def test_door_closing_without_arm_contact_pays_only_when_ungated(env_id, pays):
 @pytest.mark.parametrize("link", ["link4", "link5", "link6"])
 def test_contact_link_capsules_cover_visual_mesh(env, link):
     assert checks.capsule_coverage(env.unwrapped.model, link, tolerance=0.005) > 0.89
+
+
+@pytest.fixture
+def random_start_env():
+    env = gym.make("WamCloseCabinetRandomStart-v0")
+    yield env
+    env.close()
+
+
+def test_random_start_is_wide_level_and_out_of_contact(random_start_env):
+    env = random_start_env.unwrapped
+    starts = []
+    for seed in range(50):
+        random_start_env.reset(seed=seed)
+        assert env.data.ncon == 0
+        assert np.degrees(env._plate_tilt()) < 2
+        assert env._outside_door()
+        starts.append(env.data.qpos[:4].copy())
+    assert np.all(np.ptp(starts, axis=0) > 0.8)
+
+
+def test_scripted_sweep_solves_most_random_starts(random_start_env):
+    results = [checks.run_sweep(random_start_env, seed=seed) for seed in range(30)]
+    assert np.mean([r["success"] for r in results]) >= 0.9
+    assert all(r["wrong_contact_steps"] == 0 for r in results)
