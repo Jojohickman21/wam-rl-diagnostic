@@ -161,3 +161,50 @@ data, it was sample-limited), and a run where the slide angle varies more widely
 thing that changes between episodes. The second gap is that the spill signal arrives late: the
 object has to slide 6 cm before the episode ends, so a bad tilt is punished tens of steps after
 it happens.
+
+## 5. A18: door reward coupled to required friction, energy penalty (2026-11-17)
+
+Command: `sh scripts/run_gated_vs_ungated.sh WamCloseCabinetTrayFrictionCoupled-v0`
+
+Section 4's tray env with three changes made together: the positive door reward is multiplied by
+exp(−10 · [μ_req − tan 12°]₊), where μ_req is the friction a resting object would need given the
+plate's tilt and its acceleration over one control step, from arm kinematics only; the slide angle
+and the object's position and velocity are removed from the observation; and the smoothness terms
+are replaced by the energy penalty −0.004 · Σ|τⱼ q̇ⱼ|. Before training, μ_req matched tan(tilt) on a
+still plate and an object at rest started sliding on 0 to 8% of steps with μ_req below its true
+friction and 57 to 98% above it. Runs went one at a time, about 2,000 steps/s.
+
+| Seed | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% success | Mean coupling factor |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.752 | 0.972 | 0.160 | 0.088 | 96 | 229k / never | 0.45 |
+| 2 | 0.650 | 0.966 | 0.298 | 0.060 | 111 | 411k / never | 0.35 |
+| 3 | 0.864 | 0.980 | 0.118 | 0.018 | 75 | 138k / 808k | 0.54 |
+
+By slide angle, last 2,000 episodes of each seed pooled (about 1,500 per bin):
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.676 | 0.747 | 0.773 | 0.814 |
+| Spill | 0.286 | 0.190 | 0.147 | 0.106 |
+| Timeout | 0.040 | 0.063 | 0.081 | 0.080 |
+| Final plate tilt in successful episodes, median | 8.5° | 9.0° | 9.1° | 9.4° |
+
+Success by training window (seed 1 / 2 / 3): 0.40 / 0.19 / 0.55 over 0 to 500k steps, 0.74 / 0.64 /
+0.88 over 1.5M to 2M. All three seeds had flattened by the last two windows.
+
+**Finding.** A18 is worse than section 4 on every task measure: success 65 to 86% against 85 to 94%,
+spill 12 to 30% against 6 to 15%, episodes 75 to 111 steps against 51 to 65, and learning 2 to 6x
+slower. It did change the posture: median tilt at success dropped from 13° to about 9°. But spill
+still falls with friction, from 29% to 11%, which is steeper than section 4's 17% to 9%.
+
+**Reading.** Three changes were made at once, so the loss cannot be attributed to one of them. The
+most likely contributor is the observation: section 4's policy could see the cylinder start to
+slide and react; this one is blind to it and must prevent slip open loop, as Heins & Schoellig's
+controller does, but without their model. The mean coupling factor of 0.35 to 0.54 says the policy
+spends much of each episode in the region the reward discounts, so the door signal it learns from
+is roughly halved and noisier, which fits the slower learning. The required-friction signal itself
+is sound (it predicted slip before training); what this run shows is that using it as a multiplier,
+without letting the policy observe the object or its own required friction, did not teach the
+policy to keep margin. Separating the three changes needs three runs: A18 with the object observed,
+A18 with μ_req in the observation (encoder-derived, so still hardware-measurable), and section 4
+with only the energy penalty.
