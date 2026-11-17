@@ -136,6 +136,9 @@ Not blocked by the reward: links 5 and 6 are wrist joints on the xArm 7 and are 
 | A1 | Allowed set = link 4 and link 5 only | Does true forearm contact emerge, or only wrist contact? |
 | A2 | Append the six substep-averaged contact forces to the observation | Does explicit contact sensing change sample efficiency? The state is already Markov without them (see README), so a gain here is about learnability, not observability. |
 | A3 | Mask r_wrong until first valid contact, as WoCoCo does | Is the wrong-contact penalty suppressing exploration? |
+| A4 | Gate progress on the plate being level: gₜ also requires αₜ < α_free | Does coupling the two tasks in the reward cut spills without stalling? |
+| A5 | Quadratic tilt barrier: r_tilt = −1 · ([αₜ − α_free]₊ / (α_max − α_free))² per step, in place of the linear term | Does a gradient that steepens toward the limit warn the value function in time? |
+| A6 | A4 + A5 | The two together. Env `WamCloseCabinetRandomPoseCoupled-v0`; A5 alone is `...RandomPoseBarrier-v0`. |
 
 ## Reading the result
 

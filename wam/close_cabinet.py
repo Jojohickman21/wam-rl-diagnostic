@@ -26,6 +26,7 @@ W_PROGRESS = 50.0  # per rad
 W_REACH = 5.0
 W_WRONG = 0.5  # per step
 W_TILT = 2.0  # per rad per step
+W_BARRIER = 1.0  # per step at TILT_MAX
 W_FORCE = 0.5  # per step
 W_ACTION_RATE, W_JOINT_VEL, W_TORQUE = 0.01, 0.001, 0.01
 SUCCESS_BONUS = 20.0
@@ -43,8 +44,13 @@ BODY_GROUP = {
 class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
-    def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0)):
+    def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
+                 level_gate=False, tilt_barrier=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
+
+        `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
+        `tilt_barrier` (A5) replaces the linear tilt penalty with a quadratic one that reaches
+        W_BARRIER per step at TILT_MAX.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -53,6 +59,8 @@ class CloseCabinetEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
         self.gated = gated
+        self.level_gate = level_gate
+        self.tilt_barrier = tilt_barrier
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
         self.renderer = None
@@ -140,13 +148,13 @@ class CloseCabinetEnv(gym.Env):
         allowed = forces[1:4].sum()
         wrong = forces[0] + forces[4] + forces[5]
         contact_goal = allowed > F_MIN and wrong == 0.0
-        gate = contact_goal or not self.gated
+        tilt = self._plate_tilt()
+        gate = (contact_goal or not self.gated) and (tilt < TILT_FREE or not self.level_gate)
         self.closing += max(closed, 0.0)
         self.valid_closing += contact_goal * max(closed, 0.0)
         self.wrong_contact_steps += wrong > 0.0
 
         distance_before, self.link_distance = self.link_distance, self._link_distance()
-        tilt = self._plate_tilt()
         angle = self.data.qpos[7]
         terms = dict.fromkeys(REWARD_TERMS, 0.0)
         terms["progress"] = W_PROGRESS * (gate * max(closed, 0.0) - max(-closed, 0.0))
@@ -154,7 +162,11 @@ class CloseCabinetEnv(gym.Env):
             np.exp(-self.link_distance / REACH_SCALE) - np.exp(-distance_before / REACH_SCALE)
         )
         terms["wrong"] = -W_WRONG * (self.gated and wrong > 0.0)
-        terms["tilt"] = -W_TILT * max(tilt - TILT_FREE, 0.0)
+        excess = max(tilt - TILT_FREE, 0.0)
+        if self.tilt_barrier:
+            terms["tilt"] = -W_BARRIER * (excess / (TILT_MAX - TILT_FREE)) ** 2
+        else:
+            terms["tilt"] = -W_TILT * excess
         terms["force"] = -W_FORCE * min(max(allowed + wrong - F_MAX, 0.0) / F_MAX, 1.0)
         terms["smooth"] = -(
             W_ACTION_RATE * np.sum((action - self.last_action) ** 2)

@@ -7,7 +7,7 @@ over each run's final 500 episodes unless stated. Raw event files are in `runs/`
 
 ## 1. Fixed start: gated vs ungated reward (2026-11-16)
 
-Command: `sh scripts/run_gated_vs_ungated.sh`
+Command: `sh scripts/run_gated_vs_ungated.sh WamCloseCabinet-v0 WamCloseCabinetUngated-v0`
 
 | Condition | Seed | Success | Valid fraction | Spill | Episode length | Steps to 90% success | Episodes with any end-effector force |
 |---|---|---|---|---|---|---|---|
@@ -43,7 +43,7 @@ with early training, which was not checked by step index.
 
 ## 2. Randomised start: gated vs ungated (2026-11-16)
 
-Command: `sh scripts/run_gated_vs_ungated.sh RandomStart`
+Command: `sh scripts/run_gated_vs_ungated.sh WamCloseCabinetRandomStart-v0 WamCloseCabinetRandomStartUngated-v0`
 
 `WamCloseCabinetRandomStart-v0` draws every joint within 0.5 rad of home, levels the plate with
 the wrist, and rejects starts that touch anything or sit between the door and the cabinet. The
@@ -74,7 +74,7 @@ and the door.
 
 ## 3. Randomised cabinet pose: gated vs ungated (2026-11-16)
 
-Command: `sh scripts/run_gated_vs_ungated.sh RandomPose`
+Command: `sh scripts/run_gated_vs_ungated.sh WamCloseCabinetRandomPose-v0 WamCloseCabinetRandomPoseUngated-v0`
 
 `WamCloseCabinetRandomPose-v0` adds to the randomised start a cabinet shifted by up to 10 cm in
 x and y and turned by up to 20 degrees about the hinge. The hinge position and yaw are appended

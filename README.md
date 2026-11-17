@@ -101,7 +101,7 @@ scripts/train_ppo.py         CleanRL PPO at fe8d8a0; header lists every change
 tests/test_physics.py        the same checks as assertions
 REWARD_DESIGN.md             reward specification and exploit audit
 RESULTS.md                   what has been run and what it showed
-scripts/run_gated_vs_ungated.sh   the 3-seed comparison; pass RandomStart for the randomised start
+scripts/run_gated_vs_ungated.sh   3 seeds of each env id given on the command line
 scripts/summarize_runs.py    per-run table from runs/
 ```
 

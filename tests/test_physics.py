@@ -114,3 +114,19 @@ def test_random_cabinet_pose_varies_and_is_observed():
     assert np.all(np.ptp(cabinet[:, :2], axis=0) > 0.15)
     assert np.ptp(np.arctan2(cabinet[:, 3], cabinet[:, 2])) > np.radians(30)
     env.close()
+
+
+def test_level_gate_withholds_progress_while_plate_is_tilted():
+    results = {}
+    for env_id in ("WamCloseCabinetRandomPoseBarrier-v0", "WamCloseCabinetRandomPoseCoupled-v0"):
+        env = gym.make(env_id)
+        env.reset(seed=0)
+        env.unwrapped.data.qpos[5] += 0.6
+        env.unwrapped.data.qvel[7] = -3.0
+        _, _, _, _, info = env.step(np.zeros(7, np.float32))
+        assert np.degrees(info["task/plate_tilt"]) > 10
+        assert info["task/door_angle"] < env.unwrapped.start_angle - 0.01
+        results[env_id] = info["reward/progress"]
+        env.close()
+    assert results["WamCloseCabinetRandomPoseBarrier-v0"] > 0
+    assert results["WamCloseCabinetRandomPoseCoupled-v0"] == 0
