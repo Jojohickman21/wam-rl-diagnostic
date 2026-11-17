@@ -64,3 +64,12 @@ gym.register(
     max_episode_steps=250,
     kwargs={"start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True},
 )
+gym.register(
+    id="WamCloseCabinetTrayFrictionCoupled-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "friction_coupling": True, "energy_penalty": True,
+    },
+)

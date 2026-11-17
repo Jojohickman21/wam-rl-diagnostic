@@ -29,6 +29,13 @@ W_TILT = 2.0  # per rad per step
 W_BARRIER = 1.0  # per step at the spill limit
 W_FORCE = 0.5  # per step
 W_ACTION_RATE, W_JOINT_VEL, W_TORQUE = 0.01, 0.001, 0.01
+W_ENERGY = 0.004  # per W, Deep Whole-Body Control (Fu, Cheng, Pathak, CoRL 2022) Table 1, arm term
+# A18: the door reward is scaled by exp(-K_COUPLING * excess) where excess is how far the friction
+# a resting object would need exceeds MU_DESIGN; 0.6 at the 15 degree slide angle, 0.2 at 20.
+MU_DESIGN = np.tan(np.radians(12.0))
+K_COUPLING = 10.0
+MU_REQ_CAP = 2.0  # stands in for "the object would lift off the plate"
+GRAVITY = np.array([0.0, 0.0, -9.81])
 SUCCESS_BONUS = 20.0
 SPILL_PENALTY = 15.0
 START_TILT = np.radians(2.0)
@@ -39,7 +46,7 @@ PLATE_RADIUS, PLATE_HALF_THICKNESS = 0.09, 0.004  # must match the plate geom in
 SLIDE_ANGLE_RANGE = (np.radians(15.0), np.radians(35.0))
 # Below this the arm can pin the cylinder against the floor and crush it 15 mm into it.
 MIN_TRAY_HEIGHT = 0.15  # m, plate centre at reset
-REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "success", "spill")
+REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "energy", "success", "spill")
 
 CONTACT_GROUPS = ("upper", "link4", "link5", "link6", "ee")
 BODY_GROUP = {
@@ -52,7 +59,8 @@ class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
-                 level_gate=False, tilt_barrier=False, tray_object=False):
+                 level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
+                 friction_coupling=False, energy_penalty=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -63,6 +71,12 @@ class CloseCabinetEnv(gym.Env):
         cylinder's friction is drawn each episode so that it starts to slide on a static plate at
         an angle between 15 and 35 degrees; that angle replaces the 25 degree limit in the
         observation, and the cylinder's position and velocity in the plate frame are appended.
+        `observe_object=False` leaves both out, so the policy sees only what encoders and a door
+        camera give on hardware.
+        `friction_coupling` (A18) scales the positive door reward by how safely the plate is
+        moving: see _required_friction, which uses only the arm's own kinematics.
+        `energy_penalty` replaces the action-rate, joint-velocity and torque terms with
+        W_ENERGY times the absolute mechanical power of the arm joints.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -89,6 +103,9 @@ class CloseCabinetEnv(gym.Env):
         self.level_gate = level_gate
         self.tilt_barrier = tilt_barrier
         self.tray_object = tray_object
+        self.observe_object = tray_object and observe_object
+        self.friction_coupling = friction_coupling
+        self.energy_penalty = energy_penalty
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
@@ -122,7 +139,7 @@ class CloseCabinetEnv(gym.Env):
         ]
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (41 if tray_object else 35,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (41 if self.observe_object else 35,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
 
@@ -158,6 +175,8 @@ class CloseCabinetEnv(gym.Env):
         self.closing = self.valid_closing = 0.0
         self.wrong_contact_steps = 0
         self.returns = dict.fromkeys(REWARD_TERMS, 0.0)
+        self.object_point_velocity = self._object_point_velocity()
+        self.friction_required, self.coupling_sum, self.steps = 0.0, 0.0, 0
         return self._obs(), self._info(self._contact_forces(), penetration=0.0)
 
     def step(self, action):
@@ -195,12 +214,20 @@ class CloseCabinetEnv(gym.Env):
         self.wrong_contact_steps += wrong > 0.0
 
         distance_before, self.link_distance = self.link_distance, self._link_distance()
+        self.friction_required = self._required_friction()
+        coupling = 1.0
+        if self.friction_coupling:
+            coupling = np.exp(-K_COUPLING * max(self.friction_required - MU_DESIGN, 0.0))
+        self.coupling_sum += coupling
+        self.steps += 1
         angle = self.data.qpos[7]
         terms = dict.fromkeys(REWARD_TERMS, 0.0)
-        terms["progress"] = W_PROGRESS * (gate * max(closed, 0.0) - max(-closed, 0.0))
-        terms["reach"] = W_REACH * (
+        # Only the positive door reward is scaled: reopening and retreating cost the full amount.
+        terms["progress"] = W_PROGRESS * (coupling * gate * max(closed, 0.0) - max(-closed, 0.0))
+        reach = W_REACH * (
             np.exp(-self.link_distance / REACH_SCALE) - np.exp(-distance_before / REACH_SCALE)
         )
+        terms["reach"] = coupling * reach if reach > 0.0 else reach
         terms["wrong"] = -W_WRONG * (self.gated and wrong > 0.0)
         excess = max(tilt - TILT_FREE, 0.0)
         if self.tilt_barrier:
@@ -208,14 +235,17 @@ class CloseCabinetEnv(gym.Env):
         elif not self.tray_object:
             terms["tilt"] = -W_TILT * excess
         terms["force"] = -W_FORCE * min(max(allowed + wrong - F_MAX, 0.0) / F_MAX, 1.0)
-        terms["smooth"] = -(
-            W_ACTION_RATE * np.sum((action - self.last_action) ** 2)
-            + W_JOINT_VEL * np.sum(self.data.qvel[:7] ** 2)
-            + W_TORQUE * np.sum((self.data.qfrc_actuator[:7] / self.torque_limit) ** 2)
-        )
+        if self.energy_penalty:
+            terms["energy"] = -W_ENERGY * np.sum(np.abs(self.data.qfrc_actuator[:7] * self.data.qvel[:7]))
+        else:
+            terms["smooth"] = -(
+                W_ACTION_RATE * np.sum((action - self.last_action) ** 2)
+                + W_JOINT_VEL * np.sum(self.data.qvel[:7] ** 2)
+                + W_TORQUE * np.sum((self.data.qfrc_actuator[:7] / self.torque_limit) ** 2)
+            )
         if angle < SUCCESS_ANGLE:
             earned = self.valid_closing if self.gated else self.closing
-            terms["success"] = SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
+            terms["success"] = coupling * SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
             return terms, True
         if self._spilled():
             terms["spill"] = -SPILL_PENALTY
@@ -238,9 +268,10 @@ class CloseCabinetEnv(gym.Env):
         hinge = self.model.body_pos[self.cabinet_body][:2]
         obs = [
             q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action,
-            hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)], [self.tilt_max],
+            hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)],
+            [self.tilt_max if self.observe_object else TILT_MAX],
         ]
-        if self.tray_object:
+        if self.observe_object:
             to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
             offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
             velocity = qvel[self.object_qvel : self.object_qvel + 3]
@@ -286,6 +317,33 @@ class CloseCabinetEnv(gym.Env):
         """Unit normal of the plate's upper face (the plate is levelled with either face up)."""
         axis = self.data.geom_xmat[self.plate_geom].reshape(3, 3)[:, 2]
         return axis if axis[2] >= 0.0 else -axis
+
+    def _object_point_velocity(self):
+        """World velocity of the point where a resting object's centre sits, fixed to link 7."""
+        point = self.data.geom_xpos[self.plate_geom] + (
+            PLATE_HALF_THICKNESS + OBJECT_HALF_HEIGHT
+        ) * self._plate_up()
+        jac = np.zeros((3, self.model.nv))
+        mujoco.mj_jac(self.model, self.data, jac, None, point, self.link7)
+        return jac[:, :7] @ self.data.qvel[:7]
+
+    def _required_friction(self):
+        """Friction coefficient a resting object would need to stay put (Heins & Schoellig, 2023).
+
+        Built from arm kinematics only, as on hardware: the object point's acceleration is the
+        change in its encoder-derived velocity over one control step, and the object itself is
+        never measured. Static and tilted by a: tan(a). Accelerating: grows with the tangential
+        component of gravity minus acceleration in the plate frame.
+        """
+        velocity = self._object_point_velocity()
+        accel = (velocity - self.object_point_velocity) / (FRAME_SKIP * self.model.opt.timestep)
+        self.object_point_velocity = velocity
+        up = self._plate_up()
+        g_eff = GRAVITY - accel
+        pressing = -(g_eff @ up)
+        if pressing < 0.1 * 9.81:
+            return MU_REQ_CAP
+        return min(np.linalg.norm(g_eff + pressing * up) / pressing, MU_REQ_CAP)
 
     def _place_object(self):
         """Stand the cylinder on the plate's centre, 1 mm clear so the start is out of contact."""
@@ -345,6 +403,8 @@ class CloseCabinetEnv(gym.Env):
         info["task/spill"] = float(self._spilled())
         info["task/tilt_limit"] = float(self.tilt_max)
         info["task/plate_tilt"] = self._plate_tilt()
+        info["task/friction_required"] = float(self.friction_required)
+        info["task/coupling_mean"] = self.coupling_sum / self.steps if self.steps else 1.0
         info["task/penetration"] = float(penetration)
         info.update({f"reward/{name}": float(value) for name, value in self.returns.items()})
         return info

@@ -183,3 +183,56 @@ def test_tray_mode_has_no_tilt_penalty_and_spills_only_when_object_leaves(tray_e
     env.data.qpos[env.object_qpos : env.object_qpos + 3] += [0.0, 0.0, -1.0]
     _, _, terminated, _, info = tray_env.step(np.zeros(7, np.float32))
     assert terminated and info["task/spill"] == 1.0 and info["reward/spill"] == -15.0
+
+
+@pytest.fixture
+def coupled_env():
+    env = gym.make("WamCloseCabinetTrayFrictionCoupled-v0")
+    yield env
+    env.close()
+
+
+def test_coupled_env_observes_only_what_hardware_measures(coupled_env):
+    from wam.close_cabinet import TILT_MAX
+
+    for seed in range(5):
+        obs, info = coupled_env.reset(seed=seed)
+        assert obs.shape == coupled_env.observation_space.shape == (35,)
+        assert obs[-1] == pytest.approx(TILT_MAX)
+        assert info["task/tilt_limit"] != pytest.approx(TILT_MAX)
+
+
+def test_required_friction_is_tan_tilt_on_a_still_plate(coupled_env):
+    env = coupled_env.unwrapped
+    coupled_env.reset(seed=0)
+    env.q_target[4] += np.radians(14)
+    env.data.ctrl[:] = env.q_target
+    for _ in range(60):
+        _, _, _, _, info = coupled_env.step(np.zeros(7, np.float32))
+    assert info["task/plate_tilt"] > np.radians(3)
+    assert info["task/friction_required"] == pytest.approx(np.tan(info["task/plate_tilt"]), abs=0.01)
+
+
+def test_friction_coupling_scales_door_progress():
+    from wam.close_cabinet import CloseCabinetEnv
+
+    progress = {}
+    for jolt in (False, True):
+        env = CloseCabinetEnv(gated=False, tray_object=True, observe_object=False, friction_coupling=True)
+        env.reset(seed=0)
+        env.data.qvel[7] = -3.0
+        if jolt:
+            # A previous-step velocity of 1 m/s sideways reads as a 50 m/s^2 jolt this step.
+            env.object_point_velocity = env.object_point_velocity + np.array([1.0, 0.0, 0.0])
+        _, _, _, _, info = env.step(np.zeros(7, np.float32))
+        progress[jolt] = info["reward/progress"]
+        assert info["task/door_angle"] < env.start_angle - 0.01
+    assert progress[False] > 0
+    assert 0 <= progress[True] < 0.01 * progress[False]
+
+
+def test_energy_penalty_replaces_smoothness_terms(coupled_env):
+    coupled_env.reset(seed=0)
+    _, _, _, _, info = coupled_env.step(np.ones(7, np.float32))
+    assert info["reward/smooth"] == 0.0
+    assert info["reward/energy"] < 0.0
