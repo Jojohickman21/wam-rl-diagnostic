@@ -6,8 +6,7 @@ is asked to do whole-arm contact manipulation?
 The task is CloseCabinet from WACL (Huang, Seita, Bıyık, CoRL 2026, Sec. 4.1): an xArm 7 pushes
 a cabinet door closed with links 4 to 6 while its end-effector keeps a plate level.
 
-**The reward is not implemented.** `step()` returns 0.0. The specification is in
-[REWARD_DESIGN.md](REWARD_DESIGN.md). Training runs today exercise the pipeline and learn nothing.
+The reward follows [REWARD_DESIGN.md](REWARD_DESIGN.md). Results so far are in [RESULTS.md](RESULTS.md).
 
 ## Setup
 
@@ -101,6 +100,9 @@ scripts/verify_env.py        runs the checks, benchmarks, writes the video
 scripts/train_ppo.py         CleanRL PPO at fe8d8a0; header lists every change
 tests/test_physics.py        the same checks as assertions
 REWARD_DESIGN.md             reward specification and exploit audit
+RESULTS.md                   what has been run and what it showed
+scripts/run_gated_vs_ungated.sh   the 3-seed comparison; pass RandomStart for the randomised start
+scripts/summarize_runs.py    per-run table from runs/
 ```
 
 ## Training stack
