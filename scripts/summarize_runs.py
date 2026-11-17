@@ -21,7 +21,7 @@ def main():
     args = parser.parse_args()
 
     print("run," + ",".join(tag.split("/")[1] for tag in TAGS) + ",episodes,first_step_success_over_half")
-    for run in sorted((Path(__file__).parents[1] / "runs").iterdir()):
+    for run in sorted(p for p in (Path(__file__).parents[1] / "runs").iterdir() if p.is_dir()):
         events = EventAccumulator(str(run), size_guidance={"scalars": 0})
         events.Reload()
         means = [np.mean([e.value for e in events.Scalars(tag)[-args.last :]]) for tag in TAGS]
