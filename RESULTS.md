@@ -112,3 +112,52 @@ RL route: (1) whole-arm contact is not hard for RL when the scene makes it the s
 and a diagnostic that wants to measure the constraint has to put the end-effector on the
 shorter path deliberately; (2) the dual-task coupling is where the difficulty appears first, and
 that is the part WACL handles by construction and RL has to learn.
+
+## 4. Physical plate constraint, A7 (2026-11-17)
+
+Command: `sh scripts/run_gated_vs_ungated.sh WamCloseCabinetRandomPoseTray-v0`
+
+`WamCloseCabinetRandomPoseTray-v0` is section 3's env (random start, random cabinet pose, contact
+gate on) with the plate constraint made physical. A free cylinder (r 3 cm, h 4 cm, 0.2 kg) stands
+on the plate and the episode spills when it leaves. There is no tilt penalty, level gate or tilt
+limit. The cylinder's friction is drawn per episode so it slides at 15 to 35 degrees on a still
+plate (`scripts/calibrate_tray.py`: holds at 95%, falls at 105%), and the policy observes that
+angle and the cylinder's position and velocity on the plate. Starts with the plate below 15 cm are
+rejected. Runs went one at a time because of memory pressure, at 2,150 to 2,320 steps/s.
+
+| Seed | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 90% success | Wrong-contact steps per episode | Episodes with any end-effector force |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0.944 | 0.993 | 0.056 | 0.002 | 51 | 194k | 0.6 | 0.002 |
+| 2 | 0.846 | 0.964 | 0.152 | 0.002 | 61 | 213k | 2.6 | 0 |
+| 3 | 0.860 | 0.984 | 0.126 | 0.014 | 65 | 231k | 4.6 | 0.002 |
+
+Spill by the episode's slide angle, last 2,000 episodes of each seed pooled (about 1,500 per bin):
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.833 | 0.867 | 0.894 | 0.905 |
+| Spill | 0.167 | 0.135 | 0.101 | 0.091 |
+| Final plate tilt in successful episodes, median | 13.0° | 13.0° | 12.9° | 13.0° |
+| Final plate tilt in successful episodes, 90th percentile | 21.2° | 21.8° | 22.7° | 24.7° |
+
+**Finding.** Making the constraint physical did not improve the coupling. Success (85 to 94%)
+and spill (6 to 15%) sit inside section 3's range (83 to 97%, 3 to 17%), and learning took about
+as long (194k to 231k steps to 90%, against 108k to 314k).
+
+**The policy did not use the observed limit.** Spill falls steadily as the slide angle rises,
+from 17% to 9%, and the median plate tilt at the end of a successful episode is 13.0 degrees in
+every bin. A policy that read the slide angle would tilt less when the object is slippery and
+spill at a flat rate. This one learned a single posture that is safe for a grippy object and
+marginal for a slippery one, then let friction absorb the difference.
+
+**Without a tilt penalty the policy tilts.** Median final tilt is 13 degrees, against a level
+plate in the penalised runs. That is the expected consequence of rewarding only the object's
+survival: tilt is free until it costs the object.
+
+**Reading.** The physical constraint removed the metric to overfit, as intended, but PPO with
+2M steps learned to treat the limit as a fixed average rather than an input. Two things would
+tell whether that is the learner or the signal: a longer run (if the bins flatten with more
+data, it was sample-limited), and a run where the slide angle varies more widely or is the only
+thing that changes between episodes. The second gap is that the spill signal arrives late: the
+object has to slide 6 cm before the episode ends, so a bad tilt is punished tens of steps after
+it happens.
