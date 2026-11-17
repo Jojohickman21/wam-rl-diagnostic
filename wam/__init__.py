@@ -18,3 +18,15 @@ gym.register(
     max_episode_steps=250,
     kwargs={"gated": False},
 )
+gym.register(
+    id="WamCloseCabinetRandomStart-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={"start_spread": 0.5},
+)
+gym.register(
+    id="WamCloseCabinetRandomStartUngated-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={"start_spread": 0.5, "gated": False},
+)

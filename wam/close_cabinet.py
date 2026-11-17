@@ -30,6 +30,7 @@ W_FORCE = 0.5  # per step
 W_ACTION_RATE, W_JOINT_VEL, W_TORQUE = 0.01, 0.001, 0.01
 SUCCESS_BONUS = 20.0
 SPILL_PENALTY = 15.0
+START_TILT = np.radians(2.0)
 REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "success", "spill")
 
 CONTACT_GROUPS = ("upper", "link4", "link5", "link6", "ee")
@@ -42,23 +43,30 @@ BODY_GROUP = {
 class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
 
-    def __init__(self, render_mode=None, gated=True):
+    def __init__(self, render_mode=None, gated=True, start_spread=0.02):
+        """`start_spread` is the half-width (rad) of the uniform draw around home on every joint."""
         self.model = mujoco.MjModel.from_xml_path(str(SCENE))
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
         self.gated = gated
+        self.start_spread = start_spread
         self.renderer = None
 
         self.home = self.model.key("home").qpos.copy()
         self.ctrl_range = self.model.actuator_ctrlrange.copy()
         self.door_geom = self.model.geom("door").id
         self.link7 = self.model.body("link7").id
+        self.door_body = self.model.body("door").id
         self.torque_limit = self.model.actuator_forcerange[:, 1].copy()
         self.geom_group = np.full(self.model.ngeom, -1)
         for geom in range(self.model.ngeom):
             body = self.model.body(self.model.geom_bodyid[geom]).name
             if body in BODY_GROUP:
                 self.geom_group[geom] = CONTACT_GROUPS.index(BODY_GROUP[body])
+        self.distal_geoms = [
+            geom for geom in range(self.model.ngeom)
+            if self.geom_group[geom] > 0 and self.model.geom_contype[geom]
+        ]
         self.allowed_capsules = [
             geom for geom in range(self.model.ngeom)
             if self.model.geom(geom).name.startswith(("link4_c", "link5_c", "link6_c"))
@@ -72,12 +80,17 @@ class CloseCabinetEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:7] = self.home[:7] + self.np_random.uniform(-0.02, 0.02, 7)
-        self.data.qpos[7] = self.np_random.uniform(1.0, 1.4)
+        while True:
+            self.data.qpos[7] = self.np_random.uniform(1.0, 1.4)
+            spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
+            self.data.qpos[:7] = np.clip(self.home[:7] + spread, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
+            self._level_plate()
+            mujoco.mj_forward(self.model, self.data)
+            if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door():
+                break
         self.q_target = self.data.qpos[:7].copy()
         self.data.ctrl[:] = self.q_target
         self.last_action = np.zeros(7)
-        mujoco.mj_forward(self.model, self.data)
 
         self.start_angle = self.data.qpos[7]
         self.link_distance = self._link_distance()
@@ -175,6 +188,31 @@ class CloseCabinetEnv(gym.Env):
             else:
                 forces[-1] += wrench[0]
         return forces
+
+    def _level_plate(self):
+        """Turn the three wrist joints until the plate normal is vertical; the other joints stay."""
+        jac = np.zeros((3, self.model.nv))
+        for _ in range(20):
+            mujoco.mj_kinematics(self.model, self.data)
+            mujoco.mj_comPos(self.model, self.data)
+            normal = self.data.xmat[self.link7].reshape(3, 3)[:, 1]
+            error = np.cross(normal, [0.0, 0.0, np.sign(normal[2])])
+            mujoco.mj_jacBody(self.model, self.data, None, jac, self.link7)
+            wrist = jac[:, 4:7]
+            step = wrist.T @ np.linalg.solve(wrist @ wrist.T + 1e-4 * np.eye(3), error)
+            self.data.qpos[4:7] = np.clip(
+                self.data.qpos[4:7] + step, self.ctrl_range[4:, 0], self.ctrl_range[4:, 1]
+            )
+
+    def _outside_door(self):
+        """True when links 4-7 and the plate are all on the side of the door that closes it.
+
+        A start between the door and the cabinet would have to go around the door's free edge
+        first, which is a different and harder task than the one being measured.
+        """
+        outward = -self.data.xmat[self.door_body].reshape(3, 3)[:, 1]
+        offsets = self.data.geom_xpos[self.distal_geoms] - self.data.xpos[self.door_body]
+        return bool(np.all(offsets @ outward > 0.0))
 
     def _link_distance(self):
         """Smallest distance (m) from the link 4-6 collision capsules to the door, 0 in contact."""
