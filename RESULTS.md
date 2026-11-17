@@ -72,7 +72,7 @@ The whole-arm constraint has not bound in either experiment. To make it bind, th
 has to be the shorter path: randomise the cabinet pose, or start with the plate between the arm
 and the door.
 
-## 3. Randomised cabinet pose: gated vs ungated (pending)
+## 3. Randomised cabinet pose: gated vs ungated (2026-11-16)
 
 Command: `sh scripts/run_gated_vs_ungated.sh RandomPose`
 
@@ -81,3 +81,34 @@ x and y and turned by up to 20 degrees about the hinge. The hinge position and y
 to the observation. The scripted base-yaw sweep now succeeds on 43 of 100 starts (10 spills, the
 rest stop with the door about 0.3 rad open), so the one-joint solution of sections 1 and 2 is
 gone. Whether every start is feasible for a full-arm policy was not established.
+
+| Condition | Seed | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 90% success | Wrong-contact steps per episode | Episodes with any end-effector force |
+|---|---|---|---|---|---|---|---|---|---|
+| Gated | 1 | 0.830 | 0.979 | 0.172 | 0.002 | 60 | 314k | 1.3 | 0.002 |
+| Gated | 2 | 0.966 | 0.992 | 0.034 | 0 | 52 | 154k | 0.7 | 0 |
+| Gated | 3 | 0.884 | 0.986 | 0.116 | 0 | 50 | 108k | 1.5 | 0.006 |
+| Ungated (A0) | 1 | 0.888 | 0.973 | 0.044 | 0.070 | 74 | 342k | 2.6 | 0 |
+| Ungated (A0) | 2 | 0.894 | 0.985 | 0.106 | 0 | 54 | 153k | 0.9 | 0 |
+| Ungated (A0) | 3 | 0.952 | 0.991 | 0.048 | 0.002 | 53 | 108k | 0.8 | 0 |
+
+**Finding.** Still no gated-vs-ungated gap: seed-to-seed spread (83 to 97% success within the
+gated condition) is larger than any difference between conditions. The task got harder in the
+ways expected. Success is 83 to 97%, learning takes 4 to 10x longer (108k to 342k steps to 90%),
+episodes are 50 to 74 steps instead of 44, and valid fraction drops to 0.97 to 0.99 with 1 to 3
+wrong-contact steps per episode. The end-effector still almost never touches the door: at most
+0.6% of episodes. Wrong contact is links on the carcass or floor, not the plate on the door.
+
+**Failure modes.** Spills dominate (3 to 17% per run) and now happen mid-push: the median door
+angle at failure is 0.4 to 1.0 rad, not the start angle, so the plate tips while the arm adapts
+its push to the cabinet's pose. One ungated seed times out on 7% of episodes with the door left
+0.66 rad open.
+
+**Reading across sections 1 to 3.** Over 18 runs, PPO with perfect state found forearm contact
+on its own every time, and the gate has never changed what the policy learned. The reason is
+geometric: on this arm, from these starts, the forearm reaches the door before the plate does,
+so the constraint is never the binding one. What did bind as the task widened is the primary
+task (plate level), which went from zero cost to the dominant failure. Two conclusions for the
+RL route: (1) whole-arm contact is not hard for RL when the scene makes it the shortest path,
+and a diagnostic that wants to measure the constraint has to put the end-effector on the
+shorter path deliberately; (2) the dual-task coupling is where the difficulty appears first, and
+that is the part WACL handles by construction and RL has to learn.
