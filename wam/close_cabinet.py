@@ -61,7 +61,7 @@ class CloseCabinetEnv(gym.Env):
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
                  level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
                  observe_slide_angle=None, observe_risk=False, friction_coupling=False,
-                 energy_penalty=False):
+                 energy_penalty=False, wrist_leveler=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -81,6 +81,10 @@ class CloseCabinetEnv(gym.Env):
         moving: see _required_friction, which uses only the arm's own kinematics.
         `energy_penalty` replaces the action-rate, joint-velocity and torque terms with
         W_ENERGY times the absolute mechanical power of the arm joints.
+        `wrist_leveler` (A20) hands joints 5-7 to a feedback controller that keeps the plate level
+        (see _wrist_targets); the action shrinks to joints 1-4. The observation keeps its shape:
+        the last-action slots for joints 5-7 hold the controller's own target change, in action
+        units, which a real controller also knows.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -114,10 +118,13 @@ class CloseCabinetEnv(gym.Env):
         self.observe_risk = observe_risk
         self.friction_coupling = friction_coupling
         self.energy_penalty = energy_penalty
+        self.wrist_leveler = wrist_leveler
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
         self.renderer = None
+        # Scratch state for the wrist controller's IK, so it never touches the simulated arm.
+        self.ik_data = mujoco.MjData(self.model)
 
         self.home = self.model.key("home").qpos.copy()
         self.ctrl_range = self.model.actuator_ctrlrange.copy()
@@ -146,7 +153,7 @@ class CloseCabinetEnv(gym.Env):
             if self.model.geom(geom).name.startswith(("link4_c", "link5_c", "link6_c"))
         ]
 
-        self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (4 if wrist_leveler else 7,), np.float32)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (35 + 6 * self.observe_object + self.observe_risk,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
@@ -190,7 +197,14 @@ class CloseCabinetEnv(gym.Env):
     def step(self, action):
         action = np.clip(action, -1.0, 1.0)
         q = self.data.qpos[:7]
-        self.q_target = np.clip(self.q_target + ACTION_SCALE * action, q - MAX_LEAD, q + MAX_LEAD)
+        if self.wrist_leveler:
+            arm = np.clip(self.q_target[:4] + ACTION_SCALE * action, q[:4] - MAX_LEAD, q[:4] + MAX_LEAD)
+            arm = np.clip(arm, self.ctrl_range[:4, 0], self.ctrl_range[:4, 1])
+            wrist = self._wrist_targets(arm)
+            action = np.concatenate([action, (wrist - self.q_target[4:]) / ACTION_SCALE])
+            self.q_target = np.concatenate([arm, wrist])
+        else:
+            self.q_target = np.clip(self.q_target + ACTION_SCALE * action, q - MAX_LEAD, q + MAX_LEAD)
         self.q_target = np.clip(self.q_target, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
         self.data.ctrl[:] = self.q_target
 
@@ -322,6 +336,28 @@ class CloseCabinetEnv(gym.Env):
             self.data.qpos[4:7] = np.clip(
                 self.data.qpos[4:7] + step, self.ctrl_range[4:, 0], self.ctrl_range[4:, 1]
             )
+
+    def _wrist_targets(self, arm):
+        """A20 wrist controller: joint 5-7 targets that level the plate once joints 1-4 reach `arm`.
+
+        Damped least squares on the plate normal (link 7's y axis), as _level_plate does at reset,
+        started from the measured wrist angles. Inputs are encoder readings and commanded targets
+        only. The result may lead the measured wrist by at most MAX_LEAD, like the policy's joints.
+        """
+        data, jac = self.ik_data, np.zeros((3, self.model.nv))
+        data.qpos[:] = self.data.qpos
+        data.qpos[:4] = arm
+        q = self.data.qpos[4:7]
+        for _ in range(3):
+            mujoco.mj_kinematics(self.model, data)
+            mujoco.mj_comPos(self.model, data)
+            normal = data.xmat[self.link7].reshape(3, 3)[:, 1]
+            error = np.cross(normal, [0.0, 0.0, np.sign(normal[2])])
+            mujoco.mj_jacBody(self.model, data, None, jac, self.link7)
+            wrist = jac[:, 4:7]
+            step = wrist.T @ np.linalg.solve(wrist @ wrist.T + 1e-4 * np.eye(3), error)
+            data.qpos[4:7] = np.clip(data.qpos[4:7] + step, q - MAX_LEAD, q + MAX_LEAD)
+        return np.clip(data.qpos[4:7], self.ctrl_range[4:, 0], self.ctrl_range[4:, 1])
 
     def _plate_up(self):
         """Unit normal of the plate's upper face (the plate is levelled with either face up)."""

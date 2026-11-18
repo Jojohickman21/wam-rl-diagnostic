@@ -35,11 +35,13 @@ def run_sweep(env, seed=0, on_step=None):
     """Forearm sweep: constant base-yaw rate, every other joint target held at home.
 
     From a start away from home the arm first drives its joint targets to home at full rate.
-    The sweep itself is open loop.
+    The sweep itself is open loop. With the A20 wrist leveler the action covers joints 1-4 only
+    and the wrist follows its own controller.
     """
     env.reset(seed=seed)
-    home = env.unwrapped.home[:7]
-    sweep = np.zeros(7, np.float32)
+    joints = env.action_space.shape[0]
+    home = env.unwrapped.home[:joints]
+    sweep = np.zeros(joints, np.float32)
     sweep[0] = SWEEP_RATE * FRAME_SKIP * env.unwrapped.model.opt.timestep / ACTION_SCALE
     keys = [f"force/door_{g}" for g in CONTACT_GROUPS] + ["force/scene"]
     forces, angles = [], [env.unwrapped.data.qpos[7]]
@@ -47,11 +49,11 @@ def run_sweep(env, seed=0, on_step=None):
     sweep_steps = 0
     truncated = False
     while sweep_steps < SWEEP_STEPS + SETTLE_STEPS and not truncated:
-        to_home = home - env.unwrapped.q_target
+        to_home = home - env.unwrapped.q_target[:joints]
         if sweep_steps == 0 and np.abs(to_home).max() > ACTION_SCALE:
             action = np.clip(to_home / ACTION_SCALE, -1.0, 1.0).astype(np.float32)
         else:
-            action = sweep if sweep_steps < SWEEP_STEPS else np.zeros(7, np.float32)
+            action = sweep if sweep_steps < SWEEP_STEPS else np.zeros(joints, np.float32)
             sweep_steps += 1
         _, _, terminated, truncated, info = env.step(action)
         forces.append([info[key] for key in keys])

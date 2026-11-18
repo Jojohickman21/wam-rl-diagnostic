@@ -208,3 +208,115 @@ without letting the policy observe the object or its own required friction, did 
 policy to keep margin. Separating the three changes needs three runs: A18 with the object observed,
 A18 with μ_req in the observation (encoder-derived, so still hardware-measurable), and section 4
 with only the energy penalty.
+
+## 6. Separating A18's three changes (2026-11-18)
+
+Runs: one at a time, 16 to 21 minutes each, seed-major, each
+`python scripts/train_ppo.py --env-id <env> --seed <n> --num-envs 8 --num-steps 256 --total-timesteps 2000000 --save-model`.
+All nine finished with exit 0 and a full log (976 SPS lines); nothing was rerun.
+
+Tables: `python scripts/analyze_runs.py WamCloseCabinetTrayCoupledSeeRisk-v0 WamCloseCabinetTrayCoupledSeeObject-v0 WamCloseCabinetTrayEnergy-v0 WamCloseCabinetTrayFrictionCoupled-v0 WamCloseCabinetRandomPoseTray-v0`
+
+Each env differs from an earlier one by one change:
+
+| Env | Base | The one change |
+|---|---|---|
+| `WamCloseCabinetTrayCoupledSeeRisk-v0` | A18 | The policy observes its previous step's μ_req (encoder-derived) |
+| `WamCloseCabinetTrayCoupledSeeObject-v0` | A18 | The policy observes the cylinder's position and velocity in the plate frame (not its slide angle) |
+| `WamCloseCabinetTrayEnergy-v0` | A7 | The energy penalty replaces the smoothness terms; everything else is A7, including the observed slide angle and object |
+
+"Recovers" means: mean success over the 3 seeds within 5 points of A7's 0.883 (so at least 0.833)
+and mean spill at most 0.12.
+
+**SeeRisk (A18 + μ_req observed)**
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 25474 | 0.758 | 0.952 | 0.150 | 0.094 | 85 | 174k / never | 0.47 | 0.50 / 0.75 |
+| 2 | 29501 | 0.892 | 0.979 | 0.076 | 0.034 | 71 | 128k / 399k | 0.47 | 0.66 / 0.89 |
+| 3 | 31215 | 0.924 | 0.969 | 0.070 | 0.006 | 61 | 99k / 250k | 0.61 | 0.73 / 0.90 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.771 | 0.860 | 0.900 | 0.884 |
+| Spill | 0.206 | 0.113 | 0.072 | 0.070 |
+| Timeout | 0.027 | 0.029 | 0.029 | 0.046 |
+| Final plate tilt in successful episodes, median | 8.5° | 8.7° | 8.6° | 9.0° |
+| Episodes | 1513 | 1484 | 1533 | 1470 |
+
+**SeeObject (A18 + object position and velocity observed)**
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 25006 | 0.900 | 0.987 | 0.048 | 0.052 | 75 | 149k / 841k | 0.50 | 0.59 / 0.88 |
+| 2 | 27873 | 0.898 | 0.983 | 0.090 | 0.014 | 68 | 151k / 475k | 0.46 | 0.58 / 0.92 |
+| 3 | 28490 | 0.914 | 0.987 | 0.074 | 0.012 | 70 | 68k / 120k | 0.55 | 0.80 / 0.92 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.858 | 0.921 | 0.905 | 0.921 |
+| Spill | 0.126 | 0.058 | 0.058 | 0.043 |
+| Timeout | 0.016 | 0.021 | 0.037 | 0.037 |
+| Final plate tilt in successful episodes, median | 7.0° | 6.9° | 6.7° | 7.0° |
+| Episodes | 1480 | 1514 | 1509 | 1497 |
+
+**Energy (A7 with the energy penalty only)**
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 32749 | 0.926 | 0.986 | 0.066 | 0.008 | 60 | 59k / 183k | 1.00 | 0.80 / 0.92 |
+| 2 | 31370 | 0.842 | 0.979 | 0.156 | 0.004 | 62 | 69k / 285k | 1.00 | 0.75 / 0.89 |
+| 3 | 31030 | 0.822 | 0.980 | 0.176 | 0.006 | 62 | 59k / 356k | 1.00 | 0.76 / 0.84 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.812 | 0.876 | 0.916 | 0.896 |
+| Spill | 0.194 | 0.120 | 0.082 | 0.096 |
+| Timeout | 0.003 | 0.008 | 0.005 | 0.009 |
+| Final plate tilt in successful episodes, median | 16.8° | 17.2° | 19.0° | 20.2° |
+| Episodes | 1544 | 1447 | 1540 | 1469 |
+
+Coupling is off in this env, so the coupling column reads 1.00 by construction.
+
+The same script reproduces sections 4 and 5 (A7 and A18) exactly, with steps to 50% added: A7
+75k / 66k / 57k, A18 229k / 410k / 137k (it prints 410k and 807k for A18 where section 5 says 411k
+and 808k; same runs, 1k apart, cause not checked).
+
+Summary, 3-seed means:
+
+| Env | Mean success | Mean spill | Recovers? | Seeds agree? | Spill 15–20° → 30–35° |
+|---|---|---|---|---|---|
+| A7 (reference) | 0.883 | 0.111 | | no (0.846 to 0.944) | 16.7% → 9.1% |
+| A18 | 0.755 | 0.192 | no | no (0.650 to 0.864) | 28.6% → 10.6% |
+| SeeRisk | 0.858 | 0.099 | yes, by the definition | no: seed 1 0.758, seeds 2 and 3 0.892 and 0.924 | 20.6% → 7.0% |
+| SeeObject | 0.904 | 0.071 | yes | yes: 0.898 to 0.914, spill 0.048 to 0.090 | 12.6% → 4.3% |
+| Energy | 0.863 | 0.133 | no: success passes, spill misses by 1.3 points | no: 0.822 to 0.926 | 19.4% → 9.6% |
+
+**Finding.** The observation is what broke A18. Putting the object's position and velocity back
+into A18's observation recovers it on every seed: success 0.898 to 0.914 against A18's 0.650 to
+0.864, spill 4.8 to 9.0% against 11.8 to 29.8%, with the coupling and the energy penalty still on.
+Its mean (0.904 success, 7.1% spill) is slightly better than A7's (0.883, 11.1%) without seeing the
+slide angle, but A7's own seeds span 0.846 to 0.944, so "better than A7" is not established.
+Observing μ_req instead also meets the recovery definition on the mean (0.858, 9.9%), but only
+because two seeds recovered: seed 1 (0.758, 15% spill, never reached 90%) looks like A18's seed 1.
+Call it a partial, seed-dependent recovery, not an established one. The energy penalty alone
+leaves A7 essentially unchanged: success 0.863 against 0.883 and spill 13.3% against 11.1%, both
+inside A7's seed spread. It formally fails the spill threshold by 1.3 points, but that gap is
+smaller than the noise between seeds of either env, so the energy term is not what broke A18. It
+did change the posture: median tilt at success rose from 13° (A7) to 17 to 20°, and unlike A7 it
+rises with slide angle (16.8° → 20.2°), the first sign of any policy grading its tilt to the
+object's friction. Spill still falls with slide angle in all three envs. SeeObject flattens the
+curve above 20° (5.8%, 5.8%, 4.3%) but still spills twice as often in the slipperiest bin (12.6%).
+
+**Reading.** A18's loss comes from making the policy blind to the object, not from the coupling
+or the energy term. With the object observed, the coupled reward does no harm and the policy holds
+a flatter plate (7° at success against A7's 13°). μ_req in the observation is a partial substitute
+that worked on two of three seeds. That fits what μ_req is: an estimate of risk from arm
+kinematics, which cannot see the object start to slide when the true friction is below the
+design threshold. No condition has made spill independent of friction. Even with the object
+visible, the slipperiest objects spill most; the likely reading (inferred, not measured) is that
+the policy reacts to sliding once it starts rather than avoiding it in advance. For the RL-vs-pivot question this says: model-free RL couples the
+two tasks only when it gets feedback on the object, and on hardware that feedback means a camera
+or tactile estimate of the object's pose on the plate. That is a perception requirement, not a
+reward-design one, and it is the same requirement an imitation-learning policy would have.
+Whether a controller that owns the plate (A20) removes the need for it is the next question.

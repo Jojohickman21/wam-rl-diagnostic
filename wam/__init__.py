@@ -103,3 +103,23 @@ gym.register(
         "energy_penalty": True,
     },
 )
+# Section 7.
+gym.register(
+    id="WamCloseCabinetTrayWristLeveler-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "observe_slide_angle": False,
+        "energy_penalty": True, "wrist_leveler": True,
+    },
+)
+gym.register(
+    id="WamCloseCabinetTraySeeRisk-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "observe_risk": True, "energy_penalty": True,
+    },
+)

@@ -256,3 +256,62 @@ def test_separating_envs_observe_one_change_each(env_id, size, slide_angle_seen,
     if risk_seen:
         assert obs[-1] == pytest.approx(info["task/friction_required"])
     env.close()
+
+
+@pytest.mark.parametrize("env_id,actions,size,risk_seen", [
+    ("WamCloseCabinetTrayWristLeveler-v0", 4, 35, False),
+    ("WamCloseCabinetTraySeeRisk-v0", 7, 36, True),
+])
+def test_section7_envs_observe_only_what_hardware_measures(env_id, actions, size, risk_seen):
+    from wam.close_cabinet import TILT_MAX
+
+    env = gym.make(env_id)
+    obs, info = env.reset(seed=1)
+    assert env.action_space.shape == (actions,)
+    assert obs.shape == env.observation_space.shape == (size,)
+    assert obs[34] == pytest.approx(TILT_MAX)
+    assert info["task/tilt_limit"] != pytest.approx(TILT_MAX)
+    env.unwrapped.data.qvel[7] = -3.0
+    obs, _, _, _, info = env.step(np.zeros(actions, np.float32))
+    assert info["task/coupling_mean"] == 1.0
+    assert info["reward/smooth"] == 0.0
+    if risk_seen:
+        assert obs[-1] == pytest.approx(info["task/friction_required"])
+    env.close()
+
+
+@pytest.fixture
+def leveler_env():
+    env = gym.make("WamCloseCabinetTrayWristLeveler-v0")
+    yield env
+    env.close()
+
+
+def test_wrist_leveler_keeps_plate_level_under_random_arm_actions(leveler_env):
+    rng = np.random.default_rng(0)
+    leveler_env.reset(seed=0)
+    tilts = []
+    for _ in range(1_000):
+        _, reward, terminated, truncated, info = leveler_env.step(rng.uniform(-1, 1, 4).astype(np.float32))
+        assert np.isfinite(reward)
+        tilts.append(info["task/plate_tilt"])
+        if terminated or truncated:
+            leveler_env.reset()
+    # Measured 2026-11-18: 98.9% of 2,000 steps under 5 degrees, median 1.8.
+    assert np.mean(np.degrees(tilts) < 5) >= 0.95
+
+
+def test_wrist_leveler_moves_only_the_wrist_toward_level(leveler_env):
+    env = leveler_env.unwrapped
+    leveler_env.reset(seed=0)
+    target = env.q_target.copy()
+    leveler_env.step(np.array([1.0, 0, 0, 0], np.float32))
+    assert env.q_target[0] == pytest.approx(target[0] + 0.04)
+    assert np.allclose(env.q_target[1:4], target[1:4])
+    assert np.abs(env.q_target[4:] - env.data.qpos[4:7]).max() <= 0.1 + 1e-9
+
+
+def test_joint1_sweep_with_wrist_leveler_solves_some_random_pose_starts(leveler_env):
+    results = [checks.run_sweep(leveler_env, seed=seed) for seed in range(30)]
+    # Measured 2026-11-18: 13 of 30.
+    assert np.mean([r["success"] for r in results]) >= 0.3
