@@ -614,3 +614,21 @@ rate, between 3-seed groups in this setup are not evidence.** That covers A22 ag
 against SeeObject (§7) and Energy against A7 (§6). Neither the margin observation nor the penalty
 fixes the timeouts. What does reproduce across A20, A22 and A23 is the edge straddle: a contact the
 gate counts as valid, from which nothing in the reward rewards leaving.
+
+## 8. Does the contact gate matter when the end-effector is the nearer tool? And an outcome-only reward (pending)
+
+Queued 2026-11-18, one run at a time, 2M steps, 3 seeds, same command as section 6:
+
+| Label | Env | Queue, start | Question |
+|---|---|---|---|
+| A24 | `WamCloseCabinetEEFirst-v0` | `/tmp/pg/a23_ee.sh`, 13:15, seed-major with A25 | With half the starts end-effector-first, does the gate keep RL on the forearm, and at what cost? |
+| A25 | `WamCloseCabinetEEFirstUngated-v0` | same | How often does unconstrained RL use the end-effector when it is the nearer tool? |
+| A26 | `WamCloseCabinetTrayWristLevelerOutcome-v0` | `/tmp/pg/outcome.sh`, starts when A24/A25 end | Does dropping reach shaping and the per-step gate remove the edge straddle in A20's tray env? |
+| A27 | `WamCloseCabinetEEFirstOutcome-v0` | same | Does an end-of-episode valid-contact check alone keep the forearm in use on end-effector-first starts? |
+
+Progress logs: `runs/a23_ee_progress.log`, `runs/outcome_progress.log`. The end-effector-first env
+trains at about 950 steps/s against about 2,000 for the tray envs, partly from rejection-sampled
+resets, so its runs take about 30 to 35 minutes. Expected: A24/A25 done about 16:15, A26/A27 about
+18:45. Read per-start-type results with `task/ee_first` (logged per episode).
+Comparison bar, set now: with the noise floor in §7.3, a difference counts only if the seed ranges
+do not overlap.
