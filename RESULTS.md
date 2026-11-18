@@ -320,3 +320,20 @@ two tasks only when it gets feedback on the object, and on hardware that feedbac
 or tactile estimate of the object's pose on the plate. That is a perception requirement, not a
 reward-design one, and it is the same requirement an imitation-learning policy would have.
 Whether a controller that owns the plate (A20) removes the need for it is the next question.
+
+## 7. Follow-up suite (pending)
+
+Queue `/tmp/pg/section7.sh` started 07:36 on 2026-11-18, one run at a time, seed-major (seed 1 of
+both envs, then seed 2, then seed 3), 2M steps each, same command as section 6. Progress in
+`runs/section7_progress.log`, which ends with "all done". Expected finish around 10:00 (about 19
+minutes per A21 run, about 23 per A20 run, since the wrist IK costs about 20% throughput).
+
+| Label | Env | Question |
+|---|---|---|
+| A20 | `WamCloseCabinetTrayWristLeveler-v0` | With a wrist controller owning the plate and RL learning only joints 1 to 4, does spill drop and stop depending on friction, observing only hardware-measurable signals? |
+| A21 | `WamCloseCabinetTraySeeRisk-v0` | Does observing encoder-derived μ_req alone suffice, making the coupling unnecessary? Chosen because SeeRisk met the section 6 recovery definition (note: on two of three seeds). |
+
+Compare A20 and A21 against A7 (section 4) and SeeObject (section 6) with
+`python scripts/analyze_runs.py WamCloseCabinetTrayWristLeveler-v0 WamCloseCabinetTraySeeRisk-v0`.
+A20 pre-training checks: tilt under 5° on 98.9% of 2,000 random-action steps; joint-1 sweep
+success 13 of 30 random-pose starts, 6 spills.
