@@ -657,7 +657,7 @@ with `np.linalg.solve` (equal to within 3×10⁻¹¹). Its partial log is
 `runs/diagnostics/A24-seed1-slow-aborted.log`. Existing envs' resets were checked bit-identical
 to the previous commit.
 
-Queue `/tmp/pg/leveler_ee.sh`, restarted 14:25, one run at a time, seed-major (A24, A25, A27, A26
+Queue `/tmp/pg/leveler_ee.sh`, restarted 14:21, one run at a time, seed-major (A24, A25, A27, A26
 per seed), 2M steps, same command as section 6. Progress: `runs/leveler_ee_progress.log`.
 
 | Label | Env | Question |
