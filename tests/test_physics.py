@@ -391,3 +391,49 @@ def test_ee_first_option_leaves_other_envs_untouched():
     # No end-effector-first start exists in 400 random-pose starts (measured 2026-11-18).
     assert env.unwrapped._ee_lead() < 0
     env.close()
+
+
+@pytest.mark.parametrize("env_id,actions", [
+    ("WamCloseCabinetTrayWristLevelerOutcome-v0", 4),
+    ("WamCloseCabinetEEFirstOutcome-v0", 7),
+])
+def test_outcome_reward_pays_closing_but_not_shaping(env_id, actions):
+    env = gym.make(env_id)
+    env.reset(seed=0)
+    # Door spun shut by hand: no arm contact, so the old gate would pay nothing.
+    env.unwrapped.data.qvel[7] = -3.0
+    _, _, _, _, info = env.step(np.zeros(actions, np.float32))
+    assert info["task/door_angle"] < env.unwrapped.start_angle - 0.01
+    assert info["reward/progress"] > 0
+    assert info["task/valid_fraction"] == 0
+    for _ in range(20):
+        _, _, terminated, truncated, info = env.step(np.ones(actions, np.float32))
+        if terminated or truncated:
+            break
+    assert info["reward/reach"] == 0.0 and info["reward/wrong"] == 0.0
+    env.close()
+
+
+def test_outcome_reward_success_bonus_needs_valid_closing():
+    from wam.close_cabinet import CloseCabinetEnv
+
+    env = CloseCabinetEnv(outcome_reward=True)
+    env.reset(seed=0)
+    env.data.qpos[7] = 0.06  # one small step from success, all of it without arm contact
+    env.data.qvel[7] = -3.0
+    _, _, terminated, _, info = env.step(np.zeros(7, np.float32))
+    assert terminated and info["task/success"] == 1.0
+    assert info["reward/success"] == 0.0
+
+
+def test_outcome_reward_sweep_still_earns_full_success_bonus():
+    env = gym.make("WamCloseCabinetEEFirstOutcome-v0")
+    for seed in range(40):
+        if not env.reset(seed=seed)[1]["task/ee_first"]:
+            stats = checks.run_sweep(env, seed=seed)
+            if stats["success"] and stats["valid_fraction"] > 0.95:
+                assert stats["returns"]["reward/success"] == pytest.approx(20 * stats["valid_fraction"], rel=0.05)
+                break
+    else:
+        pytest.fail("no valid forearm sweep among 40 starts")
+    env.close()

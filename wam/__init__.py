@@ -157,3 +157,23 @@ gym.register(
     max_episode_steps=250,
     kwargs={"start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5, "gated": False},
 )
+# Outcome-only reward: no reach shaping, no per-step gate or wrong-contact penalty.
+gym.register(
+    id="WamCloseCabinetTrayWristLevelerOutcome-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "observe_slide_angle": False,
+        "energy_penalty": True, "wrist_leveler": True, "outcome_reward": True,
+    },
+)
+gym.register(
+    id="WamCloseCabinetEEFirstOutcome-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5,
+        "outcome_reward": True,
+    },
+)

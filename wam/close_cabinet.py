@@ -72,7 +72,7 @@ class CloseCabinetEnv(gym.Env):
                  level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
                  observe_slide_angle=None, observe_risk=False, friction_coupling=False,
                  energy_penalty=False, wrist_leveler=False, observe_joint_margin=False,
-                 joint_limit_penalty=False, ee_first_fraction=0.0):
+                 joint_limit_penalty=False, ee_first_fraction=0.0, outcome_reward=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -105,6 +105,10 @@ class CloseCabinetEnv(gym.Env):
         `ee_first_fraction` is the share of episodes whose start is rejection-sampled until the
         end-effector is nearer the door than links 4-6 by EE_LEAD, so the forbidden tool is the
         nearer one. `task/ee_first` in info marks those episodes. Zero leaves reset untouched.
+        `outcome_reward` (A26, A27) keeps what the episode must achieve and drops how to get there:
+        progress pays any closing (no per-step contact gate), there is no reach shaping and no
+        per-step wrong-contact penalty, and the success bonus stays scaled by the share of closing
+        done with valid forearm contact, judged once at the end. Overrides `gated`.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -142,6 +146,7 @@ class CloseCabinetEnv(gym.Env):
         self.observe_joint_margin = observe_joint_margin
         self.joint_limit_penalty = joint_limit_penalty
         self.ee_first_fraction = ee_first_fraction
+        self.outcome_reward = outcome_reward
         self.ee_first = False
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
@@ -263,7 +268,7 @@ class CloseCabinetEnv(gym.Env):
         wrong = forces[0] + forces[4] + forces[5]
         contact_goal = allowed > F_MIN and wrong == 0.0
         tilt = self._plate_tilt()
-        gate = (contact_goal or not self.gated) and (tilt < TILT_FREE or not self.level_gate)
+        gate = (contact_goal or not self.gated or self.outcome_reward) and (tilt < TILT_FREE or not self.level_gate)
         self.closing += max(closed, 0.0)
         self.valid_closing += contact_goal * max(closed, 0.0)
         self.wrong_contact_steps += wrong > 0.0
@@ -282,8 +287,9 @@ class CloseCabinetEnv(gym.Env):
         reach = W_REACH * (
             np.exp(-self.link_distance / REACH_SCALE) - np.exp(-distance_before / REACH_SCALE)
         )
-        terms["reach"] = coupling * reach if reach > 0.0 else reach
-        terms["wrong"] = -W_WRONG * (self.gated and wrong > 0.0)
+        if not self.outcome_reward:
+            terms["reach"] = coupling * reach if reach > 0.0 else reach
+            terms["wrong"] = -W_WRONG * (self.gated and wrong > 0.0)
         excess = max(tilt - TILT_FREE, 0.0)
         if self.tilt_barrier:
             terms["tilt"] = -W_BARRIER * (excess / (self.tilt_max - TILT_FREE)) ** 2
@@ -302,7 +308,7 @@ class CloseCabinetEnv(gym.Env):
             depth = np.clip(LIMIT_ZONE - self._joint_margin(), 0.0, None) / LIMIT_ZONE
             terms["limit"] = -W_LIMIT * float(np.sum(depth ** 2))
         if angle < SUCCESS_ANGLE:
-            earned = self.valid_closing if self.gated else self.closing
+            earned = self.valid_closing if self.gated or self.outcome_reward else self.closing
             terms["success"] = coupling * SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
             return terms, True
         if self._spilled():
