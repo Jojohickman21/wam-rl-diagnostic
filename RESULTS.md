@@ -672,3 +672,36 @@ Read A24, A25 and A27 with `scripts/analyze_ee_first.py` (split by start type); 
 starts: a forearm-only route exists on at least 12% of them by script. A gated success rate far
 below that is a learning failure; one near it may be the geometry's limit, not the gate's cost.
 Comparison bar, set before results: a difference counts only if seed ranges do not overlap (§7.3).
+
+### 8.2 First seeds (partial, 1 seed, 2026-11-18 15:30)
+
+Added by the unattended brief-refresh run; the main session completes §8 when seeds 2–3 finish.
+Seed 1 of each condition only. Nothing below is a conclusion: the comparison bar (non-overlapping
+seed ranges) cannot be applied to one seed, and §7.3's noise floor is about 4 points of success.
+
+`python scripts/analyze_ee_first.py WamCloseCabinetEEFirstLeveler-v0 WamCloseCabinetEEFirstLevelerUngated-v0 WamCloseCabinetEEFirstLevelerOutcome-v0` (last 1,000 episodes):
+
+| Label | Start type | Episodes | Success | Valid fraction (successes) | Closed mostly by wrong contact (share of successes) | Spill | Timeout | Episodes with any wrong contact |
+|---|---|---|---|---|---|---|---|---|
+| A24 gated | end-effector-first | 482 | 0.280 | 0.651 | 0.289 | 0.095 | 0.627 | 0.436 |
+| A24 gated | normal | 518 | 0.290 | 0.973 | 0.007 | 0.178 | 0.533 | 0.220 |
+| A25 ungated | end-effector-first | 501 | 0.567 | 0.389 | 0.613 | 0.180 | 0.253 | 0.788 |
+| A25 ungated | normal | 499 | 0.471 | 0.937 | 0.051 | 0.068 | 0.463 | 0.459 |
+| A27 outcome | end-effector-first | 504 | 0.532 | 0.275 | 0.728 | 0.167 | 0.302 | 0.897 |
+| A27 outcome | normal | 496 | 0.681 | 0.965 | 0.030 | 0.044 | 0.274 | 0.312 |
+
+None reached 90% success. `python scripts/analyze_runs.py WamCloseCabinetTrayWristLevelerOutcome-v0` (A26, seed 1):
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 16275 | 0.764 | 0.983 | 0.032 | 0.206 | 117 | 71k / never | 0.62 / 0.74 |
+
+**Observed (1 seed each).** The gated policy (A24) succeeded on under 30% of either start type and
+timed out on 53–63%. On hand-first starts, most ungated (A25) and outcome-only (A27) successes
+were closed mostly by the hand (61% and 73% of successes). A26 on the tray env timed out on 20.6%
+of episodes against A20's 1.2–4.4% (§7) and never reached 90%. A24 hand-first success (0.28) is
+above the 12% scripted forearm-only floor in §8.1.
+
+**Not yet a finding.** Whether the outcome-only reward trades the edge straddle for a different
+stall (A26) needs seeds 2–3 and the timeout profiler; that A27's end-of-episode check fails to keep
+the forearm in use on hand-first starts, and that the gate costs success there, both need seeds 2–3.
