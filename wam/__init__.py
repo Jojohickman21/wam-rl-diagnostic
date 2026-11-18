@@ -181,7 +181,7 @@ gym.register(
 # The 7-joint versions above (A24v1 etc.) could not hold the plate from the wider starts.
 _EE_LEVELER = {
     "start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5,
-    "wrist_leveler": True, "leveler_tuck": 0.2,
+    "wrist_leveler": True, "leveler_tuck": 0.2, "ee_start_pool": 300,
 }
 gym.register(
     id="WamCloseCabinetEEFirstLeveler-v0",

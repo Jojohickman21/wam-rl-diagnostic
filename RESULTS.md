@@ -644,12 +644,21 @@ record, not a result.
 
 A24, A25 and A27 rebuilt with the same hand-first starts and rewards, but with A20's controller
 holding the plate, plus a tuck (REWARD_DESIGN.md). Pre-training checks: tilt under 5° on 95.7% of
-random-action steps; a joint-1 sweep touches the door with the hand on 62% of hand-first starts
-and 0% of normal ones; forearm-only routes exist on 12% of hand-first starts (0% without the tuck)
-and 54% of normal starts (`scripts/ee_first/leveler_feasibility.py`).
+random-action steps (94.8% on the final build); a joint-1 sweep touches the door with the hand on
+62% of hand-first starts and 6% of normal ones; forearm-only routes exist on 27% of hand-first
+starts (n = 26; none without the tuck) and 38% of normal starts
+(`scripts/ee_first/leveler_feasibility.py`).
 
-Queue `/tmp/pg/leveler_ee.sh`, started 13:50, one run at a time, seed-major, 2M steps, same command
-as section 6. Progress: `runs/leveler_ee_progress.log`.
+The first launch (13:50) trained at 277 steps/s and was stopped at 14:05. Two causes, found in
+order. Rejection-sampled hand-first resets took up to 325 ms, fixed with a seeded start pool. The
+main cause, though: the tuck's 3×3 `np.linalg.inv` made the 8 worker processes contend for CPU
+(288 against about 7,000 env steps/s across 8 workers), fixed by applying the same projection
+with `np.linalg.solve` (equal to within 3×10⁻¹¹). Its partial log is
+`runs/diagnostics/A24-seed1-slow-aborted.log`. Existing envs' resets were checked bit-identical
+to the previous commit.
+
+Queue `/tmp/pg/leveler_ee.sh`, restarted 14:25, one run at a time, seed-major (A24, A25, A27, A26
+per seed), 2M steps, same command as section 6. Progress: `runs/leveler_ee_progress.log`.
 
 | Label | Env | Question |
 |---|---|---|

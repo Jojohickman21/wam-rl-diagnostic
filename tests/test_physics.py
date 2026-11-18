@@ -464,3 +464,18 @@ def test_ee_first_leveler_envs_hold_the_plate_and_start_hand_first(env_id):
     assert 0.2 < np.mean(flags) < 0.8
     assert np.mean(np.degrees(tilts) < 5) >= 0.95
     env.close()
+
+
+def test_ee_start_pool_is_seeded_and_holds_only_valid_hand_first_starts():
+    from wam.close_cabinet import EE_LEAD, CloseCabinetEnv
+
+    kwargs = dict(start_spread=1.0, cabinet_spread=(0.1, np.radians(20)), ee_first_fraction=1.0,
+                  wrist_leveler=True, leveler_tuck=0.2, ee_start_pool=8)
+    a, b = CloseCabinetEnv(**kwargs), CloseCabinetEnv(**kwargs)
+    a.reset(seed=3)
+    b.reset(seed=3)
+    assert len(a.ee_pool) == 8
+    assert all(np.array_equal(x[3], y[3]) for x, y in zip(a.ee_pool, b.ee_pool))
+    for _ in range(10):
+        a.reset()
+        assert a.data.ncon == 0 and a._outside_door() and a._ee_lead() > EE_LEAD

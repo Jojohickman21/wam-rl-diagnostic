@@ -73,7 +73,7 @@ class CloseCabinetEnv(gym.Env):
                  observe_slide_angle=None, observe_risk=False, friction_coupling=False,
                  energy_penalty=False, wrist_leveler=False, observe_joint_margin=False,
                  joint_limit_penalty=False, ee_first_fraction=0.0, outcome_reward=False,
-                 leveler_tuck=0.0):
+                 leveler_tuck=0.0, ee_start_pool=0):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -114,6 +114,10 @@ class CloseCabinetEnv(gym.Env):
         that leaves the plate level (the null space), pull joints 5-7 toward home at this gain
         per IK iteration. It tucks the plate back behind the forearm from starts where the wrist
         holds it out in front. 0 is A20's controller unchanged.
+        `ee_start_pool` > 0 draws that many end-effector-first starts once, at the first reset that
+        needs one, and samples from them after that. Rejection sampling accepts about 1 start in
+        20 (56 ms median, 325 ms at the 90th percentile), and the trainer's envs step in lockstep, so
+        every slow reset stalled all eight. The pool is drawn from the env's own seeded generator.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -153,6 +157,8 @@ class CloseCabinetEnv(gym.Env):
         self.ee_first_fraction = ee_first_fraction
         self.outcome_reward = outcome_reward
         self.leveler_tuck = leveler_tuck
+        self.ee_start_pool = ee_start_pool
+        self.ee_pool = None
         self.ee_first = False
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
@@ -202,6 +208,28 @@ class CloseCabinetEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)
+        # Drawn only when enabled, so every other env's reset sequence is unchanged.
+        self.ee_first = self.ee_first_fraction > 0 and self.np_random.random() < self.ee_first_fraction
+        if self.ee_first and self.ee_start_pool:
+            if self.ee_pool is None:
+                self.ee_pool = [self._draw_start() for _ in range(self.ee_start_pool)]
+                mujoco.mj_resetData(self.model, self.data)
+            cabinet_pos, self.cabinet_yaw, self.tilt_max, qpos = self.ee_pool[self.np_random.integers(len(self.ee_pool))]
+            self.model.body_pos[self.cabinet_body] = cabinet_pos
+            mujoco.mju_axisAngle2Quat(self.model.body_quat[self.cabinet_body], [0.0, 0.0, 1.0], self.cabinet_yaw)
+            if self.tray_object:
+                self.model.geom_friction[self.object_geom, 0] = np.tan(self.tilt_max)
+            self.data.qpos[:] = qpos
+            mujoco.mj_forward(self.model, self.data)
+        else:
+            self._draw_start()
+        self.q_target = self.data.qpos[:7].copy()
+        self.data.ctrl[:] = self.q_target
+        self.last_action = np.zeros(7)
+        return self._finish_reset()
+
+    def _draw_start(self):
+        """Draw a cabinet pose and a valid arm start into self.data; return them for the start pool."""
         shift, turn = self.cabinet_spread
         self.cabinet_yaw = self.np_random.uniform(-turn, turn)
         if self.tray_object:
@@ -211,8 +239,6 @@ class CloseCabinetEnv(gym.Env):
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
         mujoco.mju_axisAngle2Quat(self.model.body_quat[self.cabinet_body], [0.0, 0.0, 1.0], self.cabinet_yaw)
-        # Drawn only when enabled, so every other env's reset sequence is unchanged.
-        self.ee_first = self.ee_first_fraction > 0 and self.np_random.random() < self.ee_first_fraction
         while True:
             self.data.qpos[7] = self.np_random.uniform(1.0, 1.4)
             spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
@@ -225,10 +251,10 @@ class CloseCabinetEnv(gym.Env):
             if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door() and tray_clear:
                 if not self.ee_first or self._ee_lead() > EE_LEAD:
                     break
-        self.q_target = self.data.qpos[:7].copy()
-        self.data.ctrl[:] = self.q_target
-        self.last_action = np.zeros(7)
+        return (self.model.body_pos[self.cabinet_body].copy(), self.cabinet_yaw, self.tilt_max,
+                self.data.qpos.copy())
 
+    def _finish_reset(self):
         self.start_angle = self.data.qpos[7]
         self.link_distance = self._link_distance()
         self.closing = self.valid_closing = 0.0
@@ -407,8 +433,9 @@ class CloseCabinetEnv(gym.Env):
             wrist = jac[:, 4:7]
             step = wrist.T @ np.linalg.solve(wrist @ wrist.T + 1e-4 * np.eye(3), error)
             if self.leveler_tuck:
-                pinv = wrist.T @ np.linalg.inv(wrist @ wrist.T + 1e-4 * np.eye(3))
-                step += (np.eye(3) - pinv @ wrist) @ (self.leveler_tuck * (self.home[4:7] - data.qpos[4:7]))
+                # Null-space pull toward home: pull - pinv·(wrist·pull), with pinv applied by solve.
+                pull = self.leveler_tuck * (self.home[4:7] - data.qpos[4:7])
+                step += pull - wrist.T @ np.linalg.solve(wrist @ wrist.T + 1e-4 * np.eye(3), wrist @ pull)
             data.qpos[4:7] = np.clip(data.qpos[4:7] + step, q - MAX_LEAD, q + MAX_LEAD)
         return np.clip(data.qpos[4:7], self.ctrl_range[4:, 0], self.ctrl_range[4:, 1])
 
