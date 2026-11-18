@@ -67,7 +67,7 @@ script logs every `task/`, `force/` and `reward/` key of the final step's `info`
 | Door | 0.22 m wide, 2 kg, hinge damping 2 N m s/rad, friction loss 1 N m, opens across the front of the robot. Starts at 1.0 to 1.4 rad. Success below 0.05 rad. |
 | Timing | 1 kHz physics, 50 Hz control (`frame_skip` 20), 250-step episodes (5 s). |
 | Action | 7 joint position-target deltas, 0.04 rad per step at full scale (2 rad/s). The target may lead the measured joint by at most 0.1 rad. |
-| Observation (35; 41 in A7) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2, plate tilt limit 1 (25°; in A7 the tray object's slide angle). A7 appends the object's position and velocity in the plate frame, 6. |
+| Observation (35; 41 in A7) | joint position 7, joint velocity 7, target minus position 7, door angle and velocity 2, previous action 7, cabinet hinge xy 2, cabinet yaw as cos and sin 2, plate tilt limit 1 (25°; in A7 the tray object's slide angle). A7 appends the object's position and velocity in the plate frame, 6. Optional tails, in this order: μ_req 1 (`observe_risk`), joint-limit margin of joints 2, 4 and 6, 3 (`observe_joint_margin`). |
 | Contact model | Elliptic cone, `impratio` 10, `condim` 3, friction 0.5, `solref` 0.002 1, `solimp` 0.95 0.99 0.001 0.5 2. |
 
 Why these choices:
@@ -122,8 +122,9 @@ is marked alpha, and needs the task rewritten in its `reaf` layers, so it is not
 - Capsules approximate links 4 to 6 to within 5 mm for about 90% of mesh vertices. Links 1 to 3
   are one capsule each and are rough.
 - CleanRL treats the 250-step time limit as termination and does not bootstrap from it.
-- CleanRL does not save observation-normalisation statistics, so `--save-model` output cannot
-  be replayed without them.
+- `--save-model` writes `obs_rms.npz` next to the model: each env process's
+  observation-normalisation mean, variance and count, one row per process. Runs before 2026-11-18
+  have no such file, so their replays rebuild the statistics and are approximate (RESULTS.md §7.1).
 
 ## Provenance
 

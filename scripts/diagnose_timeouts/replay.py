@@ -1,10 +1,12 @@
 """Replay a saved PPO policy and record per-episode diagnostics.
 
-Observation-normalisation stats were not saved, so they are rebuilt by running the policy through
-the same NormalizeObservation wrapper for WARMUP steps (stats keep updating, as in training).
+Uses the run's saved obs_rms.npz (all env processes pooled) when it exists. Runs from before
+2026-11-18 did not save it; for those the stats are rebuilt by running the policy through the same
+NormalizeObservation wrapper for WARMUP steps, which is approximate.
 Usage: replay.py <env id> <seed> <out.npz> [record_steps]
 """
 import glob, sys
+from pathlib import Path
 import gymnasium as gym, mujoco, numpy as np, torch
 sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
 import wam  # noqa
@@ -19,6 +21,14 @@ u = raw.unwrapped
 class Spaces: single_observation_space = raw.observation_space; single_action_space = raw.action_space
 agent = Agent(Spaces()); path = glob.glob(f"runs/{env_id}__train_ppo__{seed}__*/train_ppo.cleanrl_model")[0]
 agent.load_state_dict(torch.load(path, map_location="cpu")); torch.manual_seed(seed)
+stats = Path(path).with_name("obs_rms.npz")
+if stats.exists():
+    d = np.load(stats); w = d["count"][:, None]; n = w.sum()
+    mean = (w * d["mean"]).sum(0) / n
+    rms = env.get_wrapper_attr("obs_rms")
+    rms.mean, rms.var, rms.count = mean, (w * (d["var"] + (d["mean"] - mean) ** 2)).sum(0) / n, n
+    WARMUP = 0
+print(f"normalisation: {'saved stats' if stats.exists() else f'rebuilt over {WARMUP} steps (approximate)'}")
 door_jnt = int(np.where(u.model.jnt_qposadr == 7)[0][0])
 GROUP = {name: i for i, name in enumerate(("upper", "link4", "link5", "link6", "ee"))}
 

@@ -8,6 +8,8 @@
 #   - logs every "task/", "force/" and "reward/" key of the final step's info per episode
 #   - save_model only writes the state dict; the eval and Hugging Face upload code, which
 #     imports cleanrl_utils, is removed
+#   - save_model also writes each env's observation-normalisation statistics, without which the
+#     saved policy cannot be replayed on the inputs it was trained on
 import os
 import random
 import time
@@ -340,6 +342,15 @@ if __name__ == "__main__":
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
+        # wam: one NormalizeObservation per env process; keep all of them (rows follow env index).
+        obs_rms = envs.call("get_wrapper_attr", "obs_rms")
+        np.savez(
+            f"runs/{run_name}/obs_rms.npz",
+            mean=np.stack([rms.mean for rms in obs_rms]),
+            var=np.stack([rms.var for rms in obs_rms]),
+            count=np.array([rms.count for rms in obs_rms]),
+        )
+        print(f"observation normalisation saved to runs/{run_name}/obs_rms.npz")
 
     envs.close()
     writer.close()

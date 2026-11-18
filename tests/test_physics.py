@@ -315,3 +315,33 @@ def test_joint1_sweep_with_wrist_leveler_solves_some_random_pose_starts(leveler_
     results = [checks.run_sweep(leveler_env, seed=seed) for seed in range(30)]
     # Measured 2026-11-18: 13 of 30.
     assert np.mean([r["success"] for r in results]) >= 0.3
+
+
+def test_joint_margin_is_observed_only_where_requested():
+    from wam.close_cabinet import MARGIN_CAP, TILT_MAX
+
+    plain = gym.make("WamCloseCabinetTrayWristLeveler-v0")
+    env = gym.make("WamCloseCabinetTrayWristLevelerMargin-v0")
+    obs, info = env.reset(seed=1)
+    assert plain.reset(seed=1)[0].shape == (35,)
+    assert env.action_space.shape == (4,)
+    assert obs.shape == env.observation_space.shape == (38,)
+    assert list(env.unwrapped.limited_joints) == [1, 3, 5]
+    assert obs[34] == pytest.approx(TILT_MAX)
+    assert info["task/tilt_limit"] != pytest.approx(TILT_MAX)
+    assert np.all((obs[-3:] >= 0) & (obs[-3:] <= MARGIN_CAP))
+    plain.close()
+    env.close()
+
+
+def test_joint_margin_falls_to_zero_at_the_elbow_stop():
+    from wam.close_cabinet import MARGIN_CAP
+
+    env = gym.make("WamCloseCabinetTrayWristLevelerMargin-v0")
+    env.reset(seed=0)
+    unwrapped = env.unwrapped
+    high = unwrapped.ctrl_range[3, 1]
+    for offset, expected in ((0.0, 0.0), (0.2, 0.2), (1.0, MARGIN_CAP)):
+        unwrapped.data.qpos[3] = high - offset
+        assert unwrapped._obs()[-2] == pytest.approx(expected, abs=1e-6)
+    env.close()
