@@ -497,3 +497,73 @@ Cheap tests, not run:
 - replaying seed 1 from seed 3's hard starts with joint 4's range widened, which separates
   "limit blocks the push" from "the policy steers into the limit";
 - saving the normalisation statistics in future runs, so replays are exact.
+
+## 7.2 A22: joint-limit margin observed (2026-11-18)
+
+Runs: queue `/tmp/pg/a22.sh`, 11:20 to 12:17, one at a time, same command as section 6, each with
+`obs_rms.npz` saved (the first runs to have it). All three finished with exit 0 and full logs.
+Seeds 2 and 3 started after the A23 code was added. The A22 env's observation, reward and reset
+draws were unchanged by it; the logs gained an always-zero `reward/limit` tag that seed 1's lacks.
+
+`A22 = A20 + distance to the nearer stop of joints 2, 4 and 6, clipped to 0.5 rad` (REWARD_DESIGN.md).
+
+Tables: `python scripts/analyze_runs.py WamCloseCabinetTrayWristLevelerMargin-v0`
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 31034 | 0.938 | 0.978 | 0.040 | 0.022 | 61 | 40k / 106k | 1.00 | 0.91 / 0.95 |
+| 2 | 30337 | 0.908 | 0.953 | 0.050 | 0.042 | 66 | 48k / 123k | 1.00 | 0.88 / 0.91 |
+| 3 | 31437 | 0.936 | 0.971 | 0.046 | 0.018 | 60 | 30k / 50k | 1.00 | 0.93 / 0.94 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.871 | 0.942 | 0.957 | 0.957 |
+| Spill | 0.112 | 0.038 | 0.020 | 0.014 |
+| Timeout | 0.017 | 0.021 | 0.023 | 0.029 |
+| Final plate tilt in successful episodes, median | 1.9° | 2.0° | 2.0° | 2.0° |
+| Episodes | 1493 | 1489 | 1555 | 1463 |
+
+Timeout rate by 0.5M-step training window (`scripts/diagnose_timeouts/trend.py`): seed 1 3.9 / 2.1 / 2.0
+/ 1.6%, seed 2 3.2 / 2.6 / 2.6 / 2.9%, seed 3 2.6 / 2.4 / 2.4 / 2.3%.
+
+| | Timeout per seed | Pooled timeouts, last 2,000 per seed | Mean success | Mean spill | Steps to 90% |
+|---|---|---|---|---|---|
+| A20 | 4.4 / 3.4 / 1.2% | 196 of 6,000 (3.3%) | 0.925 | 4.5% | 103k to 205k |
+| A22 | 2.2 / 4.2 / 1.8% | 135 of 6,000 (2.3%) | 0.927 | 4.5% | 50k to 123k |
+
+**Finding.** A22 does not reduce timeouts by the bar set before the runs: every seed's rate lies
+inside A20's range of 1.2 to 4.4%. The pooled drop from 3.3% to 2.3% comes from A20's worst seed.
+Success and spill are unchanged. Learning to 90% was faster on every seed (50k to 123k against 103k
+to 205k), but with three seeds per side that is suggestive, not established.
+
+**The margin removed the failure it targeted, and another took its place.** This replay is exact:
+it uses the saved normalisation statistics, and its timeout rates match training (1.6 / 3.7 / 2.4%
+against 2.2 / 4.2 / 1.8%). Only 4% of A22's 124 replayed timeouts end at the elbow stop, against 44%
+for A20 (A20's replay is approximate; see §7.1). A22's timeouts spend 8% of their steps within
+0.2 rad of any stop, against 15% for A20. The dominant failure is now the forearm pressing on the
+door while the door stays put: 41% of A22 timeouts, against 16% for A20, with a median 350 N over
+the last 50 steps and the door still about 1.14 rad open.
+
+**The stuck pushes straddle the door's top edge.** Seed 2 replayed again, 100k steps, with each
+forearm-door contact's position, normal and torque about the hinge recorded
+(`scripts/diagnose_timeouts/normals.py` and `torque_balance.py`):
+
+| | Contact height above the door's centre, median | Contacts per step | Net torque on the hinge, median | Total of the contact torques' magnitudes, median |
+|---|---|---|---|---|
+| Timeouts, last 50 steps (59) | +0.200 m (the top edge; half-height 0.2 m) | 2 (≥2 on 70% of steps) | 0.1 N·m; opening on 44% of steps | 19.1 N·m |
+| Successes (1,395) | −0.093 m (the face) | 1 | 29.7 N·m, closing | 34.0 N·m |
+
+The forearm rests over the door's top edge and touches both faces, so the contact torques cancel and
+the door is pinned. The reward offers no way out. The gate reads valid contact (links 4 to 6 on the
+door, nothing else touching), so there is no wrong-contact cost. The force cap charges at most 0.5
+per step. Lifting off forfeits reach reward, and nothing pays for it.
+
+**Reading.** Making the joint stops visible did what an observation can do: the policy stopped
+parking at them. The rate barely moved because the time went to a different local optimum, which
+in this task's geometry is the door's top edge. Two consequences. First, A23, the joint-limit
+penalty now running, targets a failure that A22 had already reduced to 4% of timeouts, so I expect
+it to match A22 (a prediction made before its results). Second, the edge-straddle is a gap in the
+contact gate: "links 4 to 6 touch the door and nothing else does" accepts a contact that cannot
+close it. A gate that also required net closing torque, or closing motion, would not pay for the
+straddle. That is a contact-geometry condition, which matters for the generality question,
+and it needs per-contact geometry the real arm cannot measure.
