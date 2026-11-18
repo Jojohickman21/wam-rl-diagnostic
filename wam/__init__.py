@@ -177,3 +177,27 @@ gym.register(
         "outcome_reward": True,
     },
 )
+# End-effector-first starts with the A20 wrist leveler plus tuck (no tray): the rebuilt A24, A25, A27.
+# The 7-joint versions above (A24v1 etc.) could not hold the plate from the wider starts.
+_EE_LEVELER = {
+    "start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5,
+    "wrist_leveler": True, "leveler_tuck": 0.2,
+}
+gym.register(
+    id="WamCloseCabinetEEFirstLeveler-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs=_EE_LEVELER,
+)
+gym.register(
+    id="WamCloseCabinetEEFirstLevelerUngated-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={**_EE_LEVELER, "gated": False},
+)
+gym.register(
+    id="WamCloseCabinetEEFirstLevelerOutcome-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={**_EE_LEVELER, "outcome_reward": True},
+)

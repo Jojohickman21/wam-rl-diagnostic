@@ -437,3 +437,30 @@ def test_outcome_reward_sweep_still_earns_full_success_bonus():
     else:
         pytest.fail("no valid forearm sweep among 40 starts")
     env.close()
+
+
+@pytest.mark.parametrize("env_id", [
+    "WamCloseCabinetEEFirstLeveler-v0",
+    "WamCloseCabinetEEFirstLevelerUngated-v0",
+    "WamCloseCabinetEEFirstLevelerOutcome-v0",
+])
+def test_ee_first_leveler_envs_hold_the_plate_and_start_hand_first(env_id):
+    from wam.close_cabinet import EE_LEAD
+
+    env = gym.make(env_id)
+    rng = np.random.default_rng(0)
+    flags, tilts = [], []
+    for seed in range(20):
+        obs, info = env.reset(seed=seed)
+        assert env.action_space.shape == (4,) and obs.shape == (35,)
+        if info["task/ee_first"]:
+            assert env.unwrapped._ee_lead() > EE_LEAD
+        flags.append(info["task/ee_first"])
+        for _ in range(25):
+            _, _, terminated, truncated, info = env.step(rng.uniform(-1, 1, 4).astype(np.float32))
+            tilts.append(info["task/plate_tilt"])
+            if terminated or truncated:
+                break
+    assert 0.2 < np.mean(flags) < 0.8
+    assert np.mean(np.degrees(tilts) < 5) >= 0.95
+    env.close()

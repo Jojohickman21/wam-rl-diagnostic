@@ -72,7 +72,8 @@ class CloseCabinetEnv(gym.Env):
                  level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
                  observe_slide_angle=None, observe_risk=False, friction_coupling=False,
                  energy_penalty=False, wrist_leveler=False, observe_joint_margin=False,
-                 joint_limit_penalty=False, ee_first_fraction=0.0, outcome_reward=False):
+                 joint_limit_penalty=False, ee_first_fraction=0.0, outcome_reward=False,
+                 leveler_tuck=0.0):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -109,6 +110,10 @@ class CloseCabinetEnv(gym.Env):
         progress pays any closing (no per-step contact gate), there is no reach shaping and no
         per-step wrong-contact penalty, and the success bonus stays scaled by the share of closing
         done with valid forearm contact, judged once at the end. Overrides `gated`.
+        `leveler_tuck` adds a secondary objective to the wrist leveler: within the wrist motion
+        that leaves the plate level (the null space), pull joints 5-7 toward home at this gain
+        per IK iteration. It tucks the plate back behind the forearm from starts where the wrist
+        holds it out in front. 0 is A20's controller unchanged.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -147,6 +152,7 @@ class CloseCabinetEnv(gym.Env):
         self.joint_limit_penalty = joint_limit_penalty
         self.ee_first_fraction = ee_first_fraction
         self.outcome_reward = outcome_reward
+        self.leveler_tuck = leveler_tuck
         self.ee_first = False
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
@@ -400,6 +406,9 @@ class CloseCabinetEnv(gym.Env):
             mujoco.mj_jacBody(self.model, data, None, jac, self.link7)
             wrist = jac[:, 4:7]
             step = wrist.T @ np.linalg.solve(wrist @ wrist.T + 1e-4 * np.eye(3), error)
+            if self.leveler_tuck:
+                pinv = wrist.T @ np.linalg.inv(wrist @ wrist.T + 1e-4 * np.eye(3))
+                step += (np.eye(3) - pinv @ wrist) @ (self.leveler_tuck * (self.home[4:7] - data.qpos[4:7]))
             data.qpos[4:7] = np.clip(data.qpos[4:7] + step, q - MAX_LEAD, q + MAX_LEAD)
         return np.clip(data.qpos[4:7], self.ctrl_range[4:, 0], self.ctrl_range[4:, 1])
 
