@@ -73,3 +73,33 @@ gym.register(
         "observe_object": False, "friction_coupling": True, "energy_penalty": True,
     },
 )
+# Section 6: each differs from one earlier env by a single change.
+gym.register(
+    id="WamCloseCabinetTrayCoupledSeeObject-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": True, "observe_slide_angle": False,
+        "friction_coupling": True, "energy_penalty": True,
+    },
+)
+gym.register(
+    id="WamCloseCabinetTrayCoupledSeeRisk-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "observe_risk": True,
+        "friction_coupling": True, "energy_penalty": True,
+    },
+)
+gym.register(
+    id="WamCloseCabinetTrayEnergy-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "energy_penalty": True,
+    },
+)

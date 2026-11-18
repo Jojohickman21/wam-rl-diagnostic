@@ -236,3 +236,23 @@ def test_energy_penalty_replaces_smoothness_terms(coupled_env):
     _, _, _, _, info = coupled_env.step(np.ones(7, np.float32))
     assert info["reward/smooth"] == 0.0
     assert info["reward/energy"] < 0.0
+
+
+@pytest.mark.parametrize("env_id,size,slide_angle_seen,risk_seen", [
+    ("WamCloseCabinetTrayCoupledSeeObject-v0", 41, False, False),
+    ("WamCloseCabinetTrayCoupledSeeRisk-v0", 36, False, True),
+    ("WamCloseCabinetTrayEnergy-v0", 41, True, False),
+])
+def test_separating_envs_observe_one_change_each(env_id, size, slide_angle_seen, risk_seen):
+    from wam.close_cabinet import TILT_MAX
+
+    env = gym.make(env_id)
+    obs, info = env.reset(seed=1)
+    assert obs.shape == env.observation_space.shape == (size,)
+    angle = obs[34]
+    assert (angle == pytest.approx(info["task/tilt_limit"])) == slide_angle_seen
+    assert (angle == pytest.approx(TILT_MAX)) != slide_angle_seen
+    obs, _, _, _, info = env.step(np.zeros(7, np.float32))
+    if risk_seen:
+        assert obs[-1] == pytest.approx(info["task/friction_required"])
+    env.close()

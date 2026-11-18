@@ -60,7 +60,8 @@ class CloseCabinetEnv(gym.Env):
 
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
                  level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
-                 friction_coupling=False, energy_penalty=False):
+                 observe_slide_angle=None, observe_risk=False, friction_coupling=False,
+                 energy_penalty=False):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -72,7 +73,10 @@ class CloseCabinetEnv(gym.Env):
         an angle between 15 and 35 degrees; that angle replaces the 25 degree limit in the
         observation, and the cylinder's position and velocity in the plate frame are appended.
         `observe_object=False` leaves both out, so the policy sees only what encoders and a door
-        camera give on hardware.
+        camera give on hardware. `observe_slide_angle` (default: same as observe_object) controls
+        the slide angle alone; hardware cannot measure it, the object's position on the plate
+        it can, with a camera.
+        `observe_risk` appends the previous control step's required friction (encoder-derived).
         `friction_coupling` (A18) scales the positive door reward by how safely the plate is
         moving: see _required_friction, which uses only the arm's own kinematics.
         `energy_penalty` replaces the action-rate, joint-velocity and torque terms with
@@ -104,6 +108,10 @@ class CloseCabinetEnv(gym.Env):
         self.tilt_barrier = tilt_barrier
         self.tray_object = tray_object
         self.observe_object = tray_object and observe_object
+        if observe_slide_angle is None:
+            observe_slide_angle = observe_object
+        self.observe_slide_angle = tray_object and observe_slide_angle
+        self.observe_risk = observe_risk
         self.friction_coupling = friction_coupling
         self.energy_penalty = energy_penalty
         self.tilt_max = TILT_MAX
@@ -139,7 +147,7 @@ class CloseCabinetEnv(gym.Env):
         ]
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (41 if self.observe_object else 35,), np.float32)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (35 + 6 * self.observe_object + self.observe_risk,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
 
@@ -269,13 +277,15 @@ class CloseCabinetEnv(gym.Env):
         obs = [
             q[:7], qvel[:7], self.q_target - q[:7], q[7:8], qvel[7:8], self.last_action,
             hinge, [np.cos(self.cabinet_yaw), np.sin(self.cabinet_yaw)],
-            [self.tilt_max if self.observe_object else TILT_MAX],
+            [self.tilt_max if self.observe_slide_angle else TILT_MAX],
         ]
         if self.observe_object:
             to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
             offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
             velocity = qvel[self.object_qvel : self.object_qvel + 3]
             obs += [to_plate @ offset, to_plate @ velocity]
+        if self.observe_risk:
+            obs.append([self.friction_required])
         return np.concatenate(obs).astype(np.float32)
 
     def _contact_forces(self):
