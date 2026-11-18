@@ -567,3 +567,50 @@ contact gate: "links 4 to 6 touch the door and nothing else does" accepts a cont
 close it. A gate that also required net closing torque, or closing motion, would not pay for the
 straddle. That is a contact-geometry condition, which matters for the generality question,
 and it needs per-contact geometry the real arm cannot measure.
+
+## 7.3 A23: small joint-limit penalty (2026-11-18)
+
+Runs: queue `/tmp/pg/a23_ee.sh`, 12:20 to 13:15, same command as section 6, exit 0 and full logs
+for all three. Launched because A22 missed the timeout bar (§7.2).
+
+`A23 = A22 − 0.05 · Σⱼ ([0.2 − marginⱼ]₊ / 0.2)² per step, joints 2, 4, 6` (REWARD_DESIGN.md).
+
+Tables: `python scripts/analyze_runs.py WamCloseCabinetTrayWristLevelerLimitPenalty-v0`
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 28542 | 0.898 | 0.964 | 0.058 | 0.044 | 71 | 38k / 96k | 1.00 | 0.88 / 0.91 |
+| 2 | 33055 | 0.888 | 0.949 | 0.092 | 0.020 | 58 | 67k / 134k | 1.00 | 0.86 / 0.88 |
+| 3 | 29492 | 0.882 | 0.960 | 0.058 | 0.062 | 68 | 34k / 66k | 1.00 | 0.90 / 0.89 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.830 | 0.890 | 0.913 | 0.929 |
+| Spill | 0.142 | 0.067 | 0.036 | 0.033 |
+| Timeout | 0.029 | 0.044 | 0.052 | 0.039 |
+| Final plate tilt in successful episodes, median | 2.0° | 2.0° | 2.1° | 2.1° |
+| Episodes | 1514 | 1440 | 1548 | 1498 |
+
+| | Timeout per seed | Pooled | Success per seed | Mean spill |
+|---|---|---|---|---|
+| A20 | 4.4 / 3.4 / 1.2% | 3.3% | 0.924 / 0.926 / 0.924 | 4.5% |
+| A22 | 2.2 / 4.2 / 1.8% | 2.3% | 0.938 / 0.908 / 0.936 | 4.5% |
+| A23 | 4.4 / 2.0 / 6.2% | 4.1% (247 of 6,000) | 0.898 / 0.888 / 0.882 | 6.9% |
+
+**Finding.** A23 did not reduce timeouts. My prediction before the runs, that it would match A22,
+was wrong in the unfavourable direction: success is lower on every seed (0.882 to 0.898 against
+0.908 to 0.938) and pooled timeouts higher. The penalty itself was close to inert. Over the whole
+run, 1.3 to 3.1% of episodes paid any of it, the mean per episode was −0.006 to −0.11 against
+returns near 80, and no successful episode in the last 2,000 paid it. In the exact replay (100k
+steps per seed, saved statistics), 6% of timeouts end at the elbow stop (A22: 4%) and 30% are
+pressing-but-stuck (A22: 41%).
+
+**Reading.** A term this small cannot plausibly cause a 4-point success drop on all three seeds.
+The likelier reading is that A23 is effectively a rerun of A22 with the same seeds, and the gap is
+run-to-run variance: a tiny change to the reward sends the same seed down a different training
+path. That is not proven (a systematic effect this small cannot be excluded with three seeds), but
+it sets a working noise floor. **Differences of about 4 points in success, or 2 points in timeout
+rate, between 3-seed groups in this setup are not evidence.** That covers A22 against A20, A20
+against SeeObject (§7) and Energy against A7 (§6). Neither the margin observation nor the penalty
+fixes the timeouts. What does reproduce across A20, A22 and A23 is the edge straddle: a contact the
+gate counts as valid, from which nothing in the reward rewards leaving.
