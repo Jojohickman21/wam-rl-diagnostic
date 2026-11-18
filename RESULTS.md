@@ -418,3 +418,82 @@ consistent: its worst seed went from 0.758 to 0.838.
 Not established: A20's advantage over SeeObject (3 seeds, ranges 1 point apart), any effect of
 μ_req observation by itself, and the cause of A20's timeouts. All results are final-500-episode
 means of 2M-step runs in simulation; nothing here has touched hardware.
+
+### 7.1 Why A20 times out more than A7 (2026-11-18)
+
+A20 timed out on 196 of its last 6,000 training episodes (3.3%), against 26 for A7 (0.4%). Two
+sources:
+
+- **Training logs** (exact): each episode's final-step metrics, last 2,000 episodes per seed.
+  `python scripts/diagnose_timeouts/profile.py WamCloseCabinetTrayWristLeveler-v0 WamCloseCabinetRandomPoseTray-v0`
+  and, for rates by training window, `python scripts/diagnose_timeouts/trend.py <same ids>`.
+- **Policy replay** (approximate): the saved A20 policies rerun stochastically for 150k steps per
+  seed (5,694 episodes), recording joint, contact and door trajectories.
+  `python scripts/diagnose_timeouts/replay.py WamCloseCabinetTrayWristLeveler-v0 <seed> runs/diagnostics/a20_s<seed>.npy 150000`,
+  then `analyze.py`, `analyze2.py` and `perseed.py` in the same folder. **Caveat:** training did not
+  save the observation-normalisation statistics, so the replay rebuilds them with a 30k-step
+  warm-up. Replayed timeout rates are higher than in training (16.7 / 6.7 / 2.1% against 4.4 / 3.4 /
+  1.2%), with the same seed order. The replay is used only for mechanism, never for rates, and its
+  timeouts match the training-log profile below (level plate, the same split in final door
+  angle, wrong contact at the end in 13 to 20%).
+
+**A7's and A20's timeouts are different failures.** From the training logs:
+
+| | A7 timeouts (26) | A20 timeouts (196) |
+|---|---|---|
+| Median plate tilt at the end | 21.6° | 1.6° |
+| Wrong contact on the final step | 92% (arm on carcass or floor) | 20% |
+| Wrong-contact steps per episode, median | 150 | 3.5 |
+| Final door angle, 25th / 50th / 75th percentile | 0.27 / 0.78 / 1.16 rad | 0.17 / 0.34 / 1.19 rad |
+
+A7's few timeouts are wedges: the arm is jammed against the cabinet with the plate tipped. A20's
+are mostly clean. In the replay, over the last 50 steps of a timeout the forearm touches the door on
+a median of 0% of steps, the door does not move, and the joints still drift by 0.1 to 0.2 rad each.
+The arm is wandering near the door, not pushing. Timeouts split into stalls near closed (42%,
+below 0.5 rad), episodes where the door was never closed past 1.0 rad (40%), and the rest.
+
+**The elbow runs into its limits.** In the replay, 44% of A20 timeouts end with joint 4 within
+0.05 rad of a hard limit: 28% fully folded (3.93 rad) and 16% fully straight (−0.19 rad). Of 4,948
+successful episodes, none comes within 0.05 rad of either limit at any step. Where joint 4 hits the
+folded limit, it does so late (median step 189) and usually with the door already near closed
+(median 0.36 rad).
+
+**Timeouts concentrate on hard starts** (replay rates, comparative only): 10 to 11% at cabinet
+yaw beyond ±10° against 4% within it, 10% in the top quartile of hinge x or y against 6%, and 12.4%
+when the elbow starts most folded (top quartile of joint 4's start angle) against 3.5% in the bottom
+quartile.
+
+**They are mostly feasible under the leveler.** Seed 3 solves the hardest combination (|yaw| > 10°
+and joint 4 starting above 2.75 rad) 81% of the time with 4.3% timeouts. Seed 1 solves 56% with
+37% timeouts. So the wrist constraint does not make these starts unreachable as a rule; seeds 1 and 2
+learned a worse strategy for them. Only 13% of seed 3's timeouts touch a joint-4 limit, against 47 to
+48% for seeds 1 and 2.
+
+**Not fixed by more training.** Timeout rate by 0.5M-step training window, from the logs: seed 1
+9.1 / 6.4 / 7.2 / 6.5%, seed 2 3.8 / 2.1 / 2.1 / 2.5%, seed 3 3.4 / 0.9 / 1.4 / 1.6%. All flat
+after 0.5M. A7 stays at 0.1 to 1.1% in every window.
+
+**Finding.** A20 times out more because some seeds converge on a strategy that, on hard starts
+(large cabinet yaw, far hinge, folded starting elbow), drives the elbow into a joint limit or leaves
+the forearm off the door, and nothing ends the episode. Reaching the limit is the clearest marker:
+it appears in about half of the timeouts of the two weaker seeds and never in a success. The best
+seed shows that most of these starts can be solved with the leveler, so this is mostly a learning
+failure, not a feasibility wall.
+
+**Reading (inference, not tested).** Two parts of the design plausibly explain why A7 avoids this:
+
+1. **With the plate level, wandering doesn't end the episode.** In A7, an arm that strays tilts
+   the plate and spills: A7's spill is 20% in the first 0.5M steps, and its timeouts are 0.4%. In
+   A20 the plate stays level, so the same straying runs to 250 steps. Total failures (spill plus
+   timeout) fit this. A20's seeds trade one for the other: seed 1 has 4.1% spill and 6.5%
+   timeouts, seed 3 6.9% and 1.6%. Over the last 0.5M steps, A20 fails 7 to 11% of episodes and
+   A7 7 to 18%.
+2. **The policy is told nothing about the limits.** No reward term or observation flags a joint
+   limit, and the reward has no time penalty by design (REWARD_DESIGN.md). A policy at a limit
+   receives no signal that would move it off.
+
+Cheap tests, not run:
+- a joint-limit margin term in the observation, or a small penalty near the limit;
+- replaying seed 1 from seed 3's hard starts with joint 4's range widened, which separates
+  "limit blocks the push" from "the policy steers into the limit";
+- saving the normalisation statistics in future runs, so replays are exact.
