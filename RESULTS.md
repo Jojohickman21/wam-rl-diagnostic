@@ -321,19 +321,100 @@ or tactile estimate of the object's pose on the plate. That is a perception requ
 reward-design one, and it is the same requirement an imitation-learning policy would have.
 Whether a controller that owns the plate (A20) removes the need for it is the next question.
 
-## 7. Follow-up suite (pending)
+## 7. Follow-up suite: A20 wrist leveler, A21 risk observed without coupling (2026-11-18)
 
-Queue `/tmp/pg/section7.sh` started 07:36 on 2026-11-18, one run at a time, seed-major (seed 1 of
-both envs, then seed 2, then seed 3), 2M steps each, same command as section 6. Progress in
-`runs/section7_progress.log`, which ends with "all done". Expected finish around 10:00 (about 19
-minutes per A21 run, about 23 per A20 run, since the wrist IK costs about 20% throughput).
+Runs: queue `/tmp/pg/section7.sh`, started 07:36, one at a time, seed-major, 15 to 17 minutes each
+(A20 was not measurably slower in training despite the wrist IK), same command as section 6. All
+six finished with exit 0 and full logs by 09:12; nothing was rerun.
 
-| Label | Env | Question |
+Tables: `python scripts/analyze_runs.py WamCloseCabinetTrayWristLeveler-v0 WamCloseCabinetTraySeeRisk-v0`
+
+| Label | Env | What it is |
 |---|---|---|
-| A20 | `WamCloseCabinetTrayWristLeveler-v0` | With a wrist controller owning the plate and RL learning only joints 1 to 4, does spill drop and stop depending on friction, observing only hardware-measurable signals? |
-| A21 | `WamCloseCabinetTraySeeRisk-v0` | Does observing encoder-derived μ_req alone suffice, making the coupling unnecessary? Chosen because SeeRisk met the section 6 recovery definition (note: on two of three seeds). |
+| A20 | `WamCloseCabinetTrayWristLeveler-v0` | Tray env, object and slide angle unobserved, energy penalty, no coupling, contact gate on. A damped-least-squares wrist controller owns joints 5 to 7 and keeps the plate normal vertical; the policy's action is joints 1 to 4. |
+| A21 | `WamCloseCabinetTraySeeRisk-v0` | Tray env, object and slide angle unobserved, energy penalty, no coupling, previous step's μ_req observed. SeeRisk (section 6) without the coupling. |
 
-Compare A20 and A21 against A7 (section 4) and SeeObject (section 6) with
-`python scripts/analyze_runs.py WamCloseCabinetTrayWristLeveler-v0 WamCloseCabinetTraySeeRisk-v0`.
-A20 pre-training checks: tilt under 5° on 98.9% of 2,000 random-action steps; joint-1 sweep
-success 13 of 30 random-pose starts, 6 spills.
+Both observe only hardware-measurable signals: joint encoders and targets, door angle, cabinet
+pose, and for A21 the encoder-derived μ_req.
+
+**A20 (wrist leveler, RL on joints 1 to 4)**
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 24167 | 0.924 | 0.982 | 0.032 | 0.044 | 77 | 50k / 205k | 1.00 | 0.84 / 0.89 |
+| 2 | 31045 | 0.926 | 0.967 | 0.040 | 0.034 | 65 | 41k / 106k | 1.00 | 0.91 / 0.93 |
+| 3 | 32080 | 0.924 | 0.965 | 0.064 | 0.012 | 62 | 43k / 103k | 1.00 | 0.88 / 0.91 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.865 | 0.923 | 0.940 | 0.941 |
+| Spill | 0.101 | 0.045 | 0.030 | 0.025 |
+| Timeout | 0.035 | 0.033 | 0.029 | 0.034 |
+| Final plate tilt in successful episodes, median | 2.0° | 2.0° | 2.0° | 2.0° |
+| Episodes | 1470 | 1503 | 1510 | 1517 |
+
+**A21 (μ_req observed, no coupling)**
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Mean coupling | Success 0-0.5M / 1.5-2M |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 33437 | 0.888 | 0.981 | 0.110 | 0.002 | 57 | 74k / 236k | 1.00 | 0.77 / 0.89 |
+| 2 | 32796 | 0.838 | 0.974 | 0.146 | 0.016 | 63 | 115k / 1351k | 1.00 | 0.63 / 0.84 |
+| 3 | 33505 | 0.904 | 0.987 | 0.092 | 0.006 | 57 | 72k / 343k | 1.00 | 0.74 / 0.90 |
+
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.821 | 0.870 | 0.906 | 0.919 |
+| Spill | 0.183 | 0.127 | 0.086 | 0.068 |
+| Timeout | 0.002 | 0.005 | 0.008 | 0.014 |
+| Final plate tilt in successful episodes, median | 13.0° | 12.7° | 12.9° | 13.1° |
+| Episodes | 1477 | 1361 | 1563 | 1599 |
+
+Coupling is off in both envs, so the coupling column reads 1.00 by construction.
+
+Summary, 3-seed means, with the earlier tray envs for comparison:
+
+| Env | Observes the object? | Mean success | Mean spill | Recovers? | Seeds agree? | Steps to 90% | Spill 15–20° → 30–35° | Median tilt at success |
+|---|---|---|---|---|---|---|---|---|
+| A7 | yes, plus slide angle | 0.883 | 0.111 | (reference) | no (0.846 to 0.944) | 194k to 231k | 16.7% → 9.1% | 13° |
+| A18 | no | 0.755 | 0.192 | no | no | 807k or never | 28.6% → 10.6% | 9° |
+| SeeObject | yes | 0.904 | 0.071 | yes | yes (0.898 to 0.914) | 120k to 841k | 12.6% → 4.3% | 7° |
+| A20 | no | 0.925 | 0.045 | yes | yes (0.924 to 0.926, spill 3.2 to 6.4%) | 103k to 205k | 10.1% → 2.5% | 2° |
+| A21 | no | 0.877 | 0.116 | yes, by the definition | partly: success 0.838 to 0.904; seed 2's spill (14.6%) is above 0.12 | 236k to 1,351k | 18.3% → 6.8% | 13° |
+
+**Finding.** A20 is the best tray result so far and the only one that is strong on every seed
+without observing the object. Success is 0.924 to 0.926 (spread 0.2 points, against 10 points for
+A7), spill 3.2 to 6.4%, and it reaches 90% success in 103k to 205k steps, the tightest and fastest range of any tray env
+(SeeObject had one seed at 120k, but the other two took 475k and 841k). Its success range does not overlap SeeObject's (0.898 to 0.914), but three seeds and a
+2-point gap are not enough to call it better than SeeObject; it is at least as good while needing
+no camera on the object. The controller holds the plate at 2.0° in every bin. Spill still falls
+with slide angle, from 10.1% to 2.5%. With the plate held near level, those spills come from the
+plate's accelerations, not its tilt. Timeouts are higher than in A7 or A21 (1.2 to 4.4% against
+under 2%). The cause was not checked; one possibility is that some cabinet poses need a wrist
+orientation the leveler does not allow.
+
+A21 meets the recovery definition on the mean (0.877, 11.6% spill), and every seed clears the
+success bar, but seed 2 spills 14.6% and took 1.35M steps to reach 90%, so it is borderline and
+not cleanly established. It reproduces A7 almost exactly: the same 13° posture in every bin and
+the same spill-versus-friction slope, with the slide angle and the object hidden and no coupling.
+Taking the coupling out of SeeRisk did not hurt it (0.877 against 0.858) and made it more
+consistent: its worst seed went from 0.758 to 0.838.
+
+**Reading.** Three things follow from sections 6 and 7 together.
+
+1. Learning the push and engineering the plate works better than learning both. Giving the plate
+   to a 3-iteration IK leveler and leaving RL four joints gave the highest, most consistent and
+   fastest result, using only encoder signals. This is Ray's "decide what component to learn"
+   tested directly, and it is the strongest evidence in this repo for a structured RL route.
+2. The coupling hurts when the policy is blind to the object and is neutral otherwise. A18
+   (blind, coupled) is the only bad tray result; A21 (blind, uncoupled) is at A7's level. What
+   μ_req in the observation adds on its own is untested: the blind, uncoupled env without μ_req
+   was not run, so A21's result cannot be credited to μ_req.
+3. No policy has made spill independent of friction, A20 included. The remaining spills are
+   inertial and grow on slippery objects, and nothing the policy observes tells it the friction.
+   Closing that gap needs either feedback on the object (SeeObject's camera route) or limiting
+   the plate's acceleration in the controller. The second keeps everything on encoders: for
+   example, the leveler could also cap μ_req, or A20 could observe μ_req.
+
+Not established: A20's advantage over SeeObject (3 seeds, ranges 1 point apart), any effect of
+μ_req observation by itself, and the cause of A20's timeouts. All results are final-500-episode
+means of 2M-step runs in simulation; nothing here has touched hardware.
