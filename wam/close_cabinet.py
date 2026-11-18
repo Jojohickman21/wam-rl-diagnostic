@@ -42,6 +42,13 @@ START_TILT = np.radians(2.0)
 # Joint-limit margin observation: distance to the nearer limit, saturating here so the feature
 # only moves when a joint is close to its stop.
 MARGIN_CAP = 0.5  # rad
+# A23: quadratic penalty inside LIMIT_ZONE of a joint stop, W_LIMIT per joint per step at the stop.
+# In A20's replay the closest any of 99% of successful episodes came to a stop was 0.30 rad;
+# timeouts spent 15% of their steps within 0.2 rad.
+LIMIT_ZONE, W_LIMIT = 0.2, 0.05  # rad, per step
+# An "end-effector-first" start has the flange, grip or plate nearer the door than any link 4-6
+# capsule by at least this much. None of 400 random-pose starts at spread 0.5 qualify; 5% at 1.0.
+EE_LEAD = 0.03  # m
 
 # A7 tray object: a squat cylinder that slides before it tips (tip angle atan(2r/h) = 56 deg).
 OBJECT_RADIUS, OBJECT_HALF_HEIGHT, OBJECT_MASS = 0.03, 0.02, 0.2  # m, m, kg
@@ -49,7 +56,7 @@ PLATE_RADIUS, PLATE_HALF_THICKNESS = 0.09, 0.004  # must match the plate geom in
 SLIDE_ANGLE_RANGE = (np.radians(15.0), np.radians(35.0))
 # Below this the arm can pin the cylinder against the floor and crush it 15 mm into it.
 MIN_TRAY_HEIGHT = 0.15  # m, plate centre at reset
-REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "energy", "success", "spill")
+REWARD_TERMS = ("progress", "reach", "wrong", "tilt", "force", "smooth", "energy", "limit", "success", "spill")
 
 CONTACT_GROUPS = ("upper", "link4", "link5", "link6", "ee")
 BODY_GROUP = {
@@ -64,7 +71,8 @@ class CloseCabinetEnv(gym.Env):
     def __init__(self, render_mode=None, gated=True, start_spread=0.02, cabinet_spread=(0.0, 0.0),
                  level_gate=False, tilt_barrier=False, tray_object=False, observe_object=True,
                  observe_slide_angle=None, observe_risk=False, friction_coupling=False,
-                 energy_penalty=False, wrist_leveler=False, observe_joint_margin=False):
+                 energy_penalty=False, wrist_leveler=False, observe_joint_margin=False,
+                 joint_limit_penalty=False, ee_first_fraction=0.0):
         """`start_spread` is the half-width (rad) of the uniform draw around home on every joint.
 
         `level_gate` (A4) pays closing progress only while the plate is within TILT_FREE.
@@ -92,6 +100,11 @@ class CloseCabinetEnv(gym.Env):
         span ±2π), its distance to the nearer limit clipped to MARGIN_CAP. It is a fixed function
         of the joint angles already observed, made explicit so the policy does not have to learn
         where the stops are.
+        `joint_limit_penalty` (A23) charges W_LIMIT * ((LIMIT_ZONE - margin) / LIMIT_ZONE)^2 per
+        limited joint per step inside LIMIT_ZONE of its stop.
+        `ee_first_fraction` is the share of episodes whose start is rejection-sampled until the
+        end-effector is nearer the door than links 4-6 by EE_LEAD, so the forbidden tool is the
+        nearer one. `task/ee_first` in info marks those episodes. Zero leaves reset untouched.
 
         `cabinet_spread` is (metres, radians): the cabinet's hinge is shifted uniformly within a
         square of that half-width in x and y and turned about z by up to that angle.
@@ -127,6 +140,9 @@ class CloseCabinetEnv(gym.Env):
         self.energy_penalty = energy_penalty
         self.wrist_leveler = wrist_leveler
         self.observe_joint_margin = observe_joint_margin
+        self.joint_limit_penalty = joint_limit_penalty
+        self.ee_first_fraction = ee_first_fraction
+        self.ee_first = False
         self.tilt_max = TILT_MAX
         self.start_spread = start_spread
         self.cabinet_spread = cabinet_spread
@@ -156,6 +172,10 @@ class CloseCabinetEnv(gym.Env):
             geom for geom in range(self.model.ngeom)
             if self.geom_group[geom] > 0 and self.model.geom_contype[geom]
         ]
+        self.ee_geoms = [
+            geom for geom in range(self.model.ngeom)
+            if self.geom_group[geom] == CONTACT_GROUPS.index("ee") and self.model.geom_contype[geom]
+        ]
         self.allowed_capsules = [
             geom for geom in range(self.model.ngeom)
             if self.model.geom(geom).name.startswith(("link4_c", "link5_c", "link6_c"))
@@ -180,6 +200,8 @@ class CloseCabinetEnv(gym.Env):
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
         mujoco.mju_axisAngle2Quat(self.model.body_quat[self.cabinet_body], [0.0, 0.0, 1.0], self.cabinet_yaw)
+        # Drawn only when enabled, so every other env's reset sequence is unchanged.
+        self.ee_first = self.ee_first_fraction > 0 and self.np_random.random() < self.ee_first_fraction
         while True:
             self.data.qpos[7] = self.np_random.uniform(1.0, 1.4)
             spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
@@ -190,7 +212,8 @@ class CloseCabinetEnv(gym.Env):
             mujoco.mj_forward(self.model, self.data)
             tray_clear = not self.tray_object or self.data.geom_xpos[self.plate_geom][2] > MIN_TRAY_HEIGHT
             if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door() and tray_clear:
-                break
+                if not self.ee_first or self._ee_lead() > EE_LEAD:
+                    break
         self.q_target = self.data.qpos[:7].copy()
         self.data.ctrl[:] = self.q_target
         self.last_action = np.zeros(7)
@@ -275,6 +298,9 @@ class CloseCabinetEnv(gym.Env):
                 + W_JOINT_VEL * np.sum(self.data.qvel[:7] ** 2)
                 + W_TORQUE * np.sum((self.data.qfrc_actuator[:7] / self.torque_limit) ** 2)
             )
+        if self.joint_limit_penalty:
+            depth = np.clip(LIMIT_ZONE - self._joint_margin(), 0.0, None) / LIMIT_ZONE
+            terms["limit"] = -W_LIMIT * float(np.sum(depth ** 2))
         if angle < SUCCESS_ANGLE:
             earned = self.valid_closing if self.gated else self.closing
             terms["success"] = coupling * SUCCESS_BONUS * min(earned / (self.start_angle - angle), 1.0)
@@ -447,6 +473,15 @@ class CloseCabinetEnv(gym.Env):
             for geom in self.allowed_capsules
         ))
 
+    def _ee_lead(self):
+        """How much nearer (m) the end-effector is to the door than links 4-6; positive = nearer."""
+        fromto = np.zeros(6)
+        ee = min(
+            mujoco.mj_geomDistance(self.model, self.data, geom, self.door_geom, 1.0, fromto)
+            for geom in self.ee_geoms
+        )
+        return self._link_distance() - max(ee, 0.0)
+
     def _plate_tilt(self):
         plate_normal_z = self.data.xmat[self.link7].reshape(3, 3)[2, 1]
         return float(np.arccos(np.clip(abs(plate_normal_z), 0.0, 1.0)))
@@ -469,5 +504,7 @@ class CloseCabinetEnv(gym.Env):
         info["task/friction_required"] = float(self.friction_required)
         info["task/coupling_mean"] = self.coupling_sum / self.steps if self.steps else 1.0
         info["task/penetration"] = float(penetration)
+        if self.ee_first_fraction > 0:
+            info["task/ee_first"] = float(self.ee_first)
         info.update({f"reward/{name}": float(value) for name, value in self.returns.items()})
         return info

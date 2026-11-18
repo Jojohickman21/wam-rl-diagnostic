@@ -133,3 +133,27 @@ gym.register(
         "energy_penalty": True, "wrist_leveler": True, "observe_joint_margin": True,
     },
 )
+gym.register(
+    id="WamCloseCabinetTrayWristLevelerLimitPenalty-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={
+        "start_spread": 0.5, "cabinet_spread": (0.1, np.radians(20)), "tray_object": True,
+        "observe_object": False, "observe_slide_angle": False,
+        "energy_penalty": True, "wrist_leveler": True, "observe_joint_margin": True,
+        "joint_limit_penalty": True,
+    },
+)
+# End-effector-first mix: half the starts put the end-effector nearer the door than the forearm.
+gym.register(
+    id="WamCloseCabinetEEFirst-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={"start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5},
+)
+gym.register(
+    id="WamCloseCabinetEEFirstUngated-v0",
+    entry_point="wam.close_cabinet:CloseCabinetEnv",
+    max_episode_steps=250,
+    kwargs={"start_spread": 1.0, "cabinet_spread": (0.1, np.radians(20)), "ee_first_fraction": 0.5, "gated": False},
+)

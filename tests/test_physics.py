@@ -345,3 +345,49 @@ def test_joint_margin_falls_to_zero_at_the_elbow_stop():
         unwrapped.data.qpos[3] = high - offset
         assert unwrapped._obs()[-2] == pytest.approx(expected, abs=1e-6)
     env.close()
+
+
+@pytest.mark.parametrize("env_id,charged", [
+    ("WamCloseCabinetTrayWristLevelerMargin-v0", False),
+    ("WamCloseCabinetTrayWristLevelerLimitPenalty-v0", True),
+])
+def test_joint_limit_penalty_charges_only_near_a_stop(env_id, charged):
+    from wam.close_cabinet import W_LIMIT
+
+    env = gym.make(env_id)
+    env.reset(seed=0)
+    _, _, _, _, info = env.step(np.zeros(4, np.float32))
+    assert info["reward/limit"] == 0.0
+    unwrapped = env.unwrapped
+    # Hold joint 4 0.05 rad from its upper stop: depth 0.75, so 0.5625 * W_LIMIT this step.
+    high = unwrapped.ctrl_range[3, 1]
+    unwrapped.data.qpos[3] = unwrapped.q_target[3] = high - 0.05
+    terms, _ = unwrapped._reward(np.zeros(7), np.zeros(6), 0.0)
+    expected = -W_LIMIT * 0.75 ** 2 if charged else 0.0
+    assert terms["limit"] == pytest.approx(expected, rel=1e-6)
+    env.close()
+
+
+def test_ee_first_starts_put_the_end_effector_nearer_the_door():
+    from wam.close_cabinet import EE_LEAD
+
+    env = gym.make("WamCloseCabinetEEFirst-v0")
+    flags = []
+    for seed in range(40):
+        _, info = env.reset(seed=seed)
+        unwrapped = env.unwrapped
+        assert unwrapped.data.ncon == 0 and unwrapped._outside_door()
+        if info["task/ee_first"]:
+            assert unwrapped._ee_lead() > EE_LEAD
+        flags.append(info["task/ee_first"])
+    assert 0.3 < np.mean(flags) < 0.7
+    env.close()
+
+
+def test_ee_first_option_leaves_other_envs_untouched():
+    env = gym.make("WamCloseCabinetRandomPose-v0")
+    _, info = env.reset(seed=0)
+    assert "task/ee_first" not in info
+    # No end-effector-first start exists in 400 random-pose starts (measured 2026-11-18).
+    assert env.unwrapped._ee_lead() < 0
+    env.close()
