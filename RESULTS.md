@@ -617,18 +617,49 @@ gate counts as valid, from which nothing in the reward rewards leaving.
 
 ## 8. Does the contact gate matter when the end-effector is the nearer tool? And an outcome-only reward (pending)
 
-Queued 2026-11-18, one run at a time, 2M steps, 3 seeds, same command as section 6:
+### 8.0 First build, abandoned (A24v1, 2026-11-18)
 
-| Label | Env | Queue, start | Question |
-|---|---|---|---|
-| A24 | `WamCloseCabinetEEFirst-v0` | `/tmp/pg/a23_ee.sh`, 13:15, seed-major with A25 | With half the starts end-effector-first, does the gate keep RL on the forearm, and at what cost? |
-| A25 | `WamCloseCabinetEEFirstUngated-v0` | same | How often does unconstrained RL use the end-effector when it is the nearer tool? |
-| A26 | `WamCloseCabinetTrayWristLevelerOutcome-v0` | `/tmp/pg/outcome.sh`, starts when A24/A25 end | Does dropping reach shaping and the per-step gate remove the edge straddle in A20's tray env? |
-| A27 | `WamCloseCabinetEEFirstOutcome-v0` | same | Does an end-of-episode valid-contact check alone keep the forearm in use on end-effector-first starts? |
+Sections 1 to 3 never tested the gate where it would bind: in 400 random-pose starts the forearm
+was always nearer the door than the hand, by 11 to 25 cm. A24v1 (`WamCloseCabinetEEFirst-v0`)
+rejection-sampled half of all starts so the hand starts at least 3 cm nearer. That needed the start
+spread widened from 0.5 to 1.0 rad per joint, on section 3's 7-joint env with no tray.
 
-Progress logs: `runs/a23_ee_progress.log`, `runs/outcome_progress.log`. The end-effector-first env
-trains at about 950 steps/s against about 2,000 for the tray envs, partly from rejection-sampled
-resets, so its runs take about 30 to 35 minutes. Expected: A24/A25 done about 16:15, A26/A27 about
-18:45. Read per-start-type results with `task/ee_first` (logged per episode).
-Comparison bar, set now: with the noise floor in §7.3, a difference counts only if the seed ranges
-do not overlap.
+`python scripts/analyze_ee_first.py WamCloseCabinetEEFirst-v0` (seed 1, the only run; last 1,000 episodes):
+
+| Seed | Start type | Episodes | Success | Valid fraction (successes) | Closed mostly by wrong contact (share of successes) | Spill | Timeout | Episodes with any wrong contact | Steps to 90% success (all starts) |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | end-effector-first | 510 | 0.047 | 0.765 | 0.208 | 0.955 | 0.000 | 0.135 | never |
+| 1 | normal | 490 | 0.053 | 0.995 | 0.000 | 0.947 | 0.000 | 0.039 | never |
+
+Success stayed at 2 to 7% in every 200k-step window. About 95% of episodes ended in a tilt spill
+near step 38, on both start types. Zero actions held the plate on all 40 starts tested, so the
+starts are safe; the policy tips the plate when it moves. Wider starts leave the wrist in
+configurations where nearly any arm motion tilts the plate, and the 7-joint policy did not learn
+level motion from them in 2M steps (section 3's env at 0.5 rad reached 90% in 108k to 342k
+steps). With almost no successes there was no contact choice to measure, so the gate question went
+unanswered. The queue was stopped by hand at 13:45. A25v1 and A27v1 never ran. One seed, kept as a
+record, not a result.
+
+### 8.1 Rebuilt on the wrist leveler (queued)
+
+A24, A25 and A27 rebuilt with the same hand-first starts and rewards, but with A20's controller
+holding the plate, plus a tuck (REWARD_DESIGN.md). Pre-training checks: tilt under 5° on 95.7% of
+random-action steps; a joint-1 sweep touches the door with the hand on 62% of hand-first starts
+and 0% of normal ones; forearm-only routes exist on 12% of hand-first starts (0% without the tuck)
+and 54% of normal starts (`scripts/ee_first/leveler_feasibility.py`).
+
+Queue `/tmp/pg/leveler_ee.sh`, started 13:50, one run at a time, seed-major, 2M steps, same command
+as section 6. Progress: `runs/leveler_ee_progress.log`.
+
+| Label | Env | Question |
+|---|---|---|
+| A24 | `WamCloseCabinetEEFirstLeveler-v0` | Where the hand is the nearer tool and a controller holds the plate, does the gate keep RL on the forearm, and at what cost? |
+| A25 | `WamCloseCabinetEEFirstLevelerUngated-v0` | How often does unconstrained RL use the hand when it is the nearer tool? |
+| A27 | `WamCloseCabinetEEFirstLevelerOutcome-v0` | Does an end-of-episode valid-contact check alone keep the forearm in use? |
+| A26 | `WamCloseCabinetTrayWristLevelerOutcome-v0` | Does dropping reach shaping and the per-step gate remove the edge straddle in A20's tray env (§7.2)? |
+
+Read A24, A25 and A27 with `scripts/analyze_ee_first.py` (split by start type); read A26 with
+`scripts/analyze_runs.py` and `scripts/diagnose_timeouts/profile.py`. Interpreting hand-first
+starts: a forearm-only route exists on at least 12% of them by script. A gated success rate far
+below that is a learning failure; one near it may be the geometry's limit, not the gate's cost.
+Comparison bar, set before results: a difference counts only if seed ranges do not overlap (§7.3).
