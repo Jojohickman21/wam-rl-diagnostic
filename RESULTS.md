@@ -673,35 +673,111 @@ starts: a forearm-only route exists on at least 12% of them by script. A gated s
 below that is a learning failure; one near it may be the geometry's limit, not the gate's cost.
 Comparison bar, set before results: a difference counts only if seed ranges do not overlap (§7.3).
 
-### 8.2 First seeds (partial, 1 seed, 2026-11-18 15:30)
+### 8.2 A24, A25, A27: the gate where the hand is the nearer tool (3 seeds, 2026-11-18)
 
-Added by the unattended brief-refresh run; the main session completes §8 when seeds 2–3 finish.
-Seed 1 of each condition only. Nothing below is a conclusion: the comparison bar (non-overlapping
-seed ranges) cannot be applied to one seed, and §7.3's noise floor is about 4 points of success.
+All nine runs finished with exit 0 and full logs by 17:16.
+`python scripts/analyze_ee_first.py WamCloseCabinetEEFirstLeveler-v0 WamCloseCabinetEEFirstLevelerUngated-v0 WamCloseCabinetEEFirstLevelerOutcome-v0`
+(last 1,000 episodes per seed, split by `task/ee_first`):
 
-`python scripts/analyze_ee_first.py WamCloseCabinetEEFirstLeveler-v0 WamCloseCabinetEEFirstLevelerUngated-v0 WamCloseCabinetEEFirstLevelerOutcome-v0` (last 1,000 episodes):
+| Label | Start type | Seed 1 success | Seed 2 success | Seed 3 success | Valid fraction (successes) | Closed mostly by wrong contact (successes) | Timeout |
+|---|---|---|---|---|---|---|---|
+| A24 gated | hand-first | 0.280 | 0.061 | 0.472 | 0.56 mean | 0.41 mean | 0.31–0.63 |
+| A24 gated | normal | 0.290 | 0.118 | 0.482 | 0.92 mean | 0.06 mean | 0.34–0.78 |
+| A25 ungated | hand-first | 0.567 | 0.558 | 0.588 | 0.40 mean | 0.59 mean | 0.23–0.25 |
+| A25 ungated | normal | 0.471 | 0.632 | 0.565 | 0.95 mean | 0.04 mean | 0.29–0.46 |
+| A27 outcome | hand-first | 0.532 | 0.440 | 0.502 | 0.41 mean | 0.59 mean | 0.30–0.44 |
+| A27 outcome | normal | 0.681 | 0.400 | 0.560 | 0.95 mean | 0.04 mean | 0.27–0.52 |
 
-| Label | Start type | Episodes | Success | Valid fraction (successes) | Closed mostly by wrong contact (share of successes) | Spill | Timeout | Episodes with any wrong contact |
-|---|---|---|---|---|---|---|---|---|
-| A24 gated | end-effector-first | 482 | 0.280 | 0.651 | 0.289 | 0.095 | 0.627 | 0.436 |
-| A24 gated | normal | 518 | 0.290 | 0.973 | 0.007 | 0.178 | 0.533 | 0.220 |
-| A25 ungated | end-effector-first | 501 | 0.567 | 0.389 | 0.613 | 0.180 | 0.253 | 0.788 |
-| A25 ungated | normal | 499 | 0.471 | 0.937 | 0.051 | 0.068 | 0.463 | 0.459 |
-| A27 outcome | end-effector-first | 504 | 0.532 | 0.275 | 0.728 | 0.167 | 0.302 | 0.897 |
-| A27 outcome | normal | 496 | 0.681 | 0.965 | 0.030 | 0.044 | 0.274 | 0.312 |
+No condition reached 90% success in any window; success by 0.5M-step training window (seeds
+pooled, `0–0.5M / 0.5–1M / 1–1.5M / 1.5–2M`) was A24 `0.18/0.25/0.27/0.28`, A25
+`0.43/0.53/0.56/0.56`, A27 `0.42/0.52/0.52/0.51`. All three had flattened by the last two windows
+except A24 seed 3, still rising (0.43 → 0.47 over the last two windows). Timeouts (31–78% of
+episodes) are far above anything in §4–7 (under 5% except A23's 6.2%), so this task is harder in
+this setup than any earlier one, independent of the gate question.
 
-None reached 90% success. `python scripts/analyze_runs.py WamCloseCabinetTrayWristLevelerOutcome-v0` (A26, seed 1):
+**Finding.** The gate did suppress hand use: successes closed mostly by the hand fell from 59%
+under A25 (ungated) to 41% under A24 (gated), on hand-first starts, seed ranges not overlapping.
+But the gate did not confine the hand to hand-first starts — it cut hand use from 4–6% to 6–7% of
+successes on normal starts too, where the forearm was already the easier tool, which is noise, not
+suppression. **The gate's cost in success is the same size on both start types.** Mean success
+under the gate (A24) is about 27 points below ungated (A25) on hand-first starts (0.271 against
+0.571) and about 26 points below on normal starts (0.297 against 0.556), both outside §7.3's noise
+floor. If the gate's cost were specifically the price of being forced onto the harder tool, it
+should cost more on hand-first starts than on normal ones; it does not. A24's hand-first success
+(mean 0.271) does clear the 27% scripted forearm-only floor from §8.1, so the task is not
+infeasible for the gated policy, but one seed (0.061) falls under even that, and the three seeds
+disagree enough (0.061 to 0.472) that the floor comparison should not be read seed by seed.
+A27 (outcome reward, no per-step gate) behaves like A25 in tool choice (59% vs 59%) but scores 8
+points below it on hand-first starts, seed ranges not overlapping (0.491 against 0.571) — an
+end-of-episode check alone did not recover ungated's success.
 
-| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Success 0-0.5M / 1.5-2M |
+**Reading.** The result does not separate "the gate is expensive because the hand is objectively
+easier here" from "this harder task (wide starts, the leveler, mixed start types) is just more
+brittle to train with a per-step contact constraint, on any start." The second reading fits the
+data better: a uniform cost across start types is what a general training-difficulty tax looks
+like, not a tool-specific one. This cuts against reading A24–A25's gap as evidence the gate forces
+worse contact choices specifically when the hand is easier; it is evidence the gate makes a harder
+task harder to learn, which is a narrower and less interesting claim. Three seeds and no run
+reaching 90% success means none of this is settled; a longer run or more seeds could move it.
+
+### 8.3 A26: outcome reward on A20's tray env (3 seeds, 2026-11-18)
+
+`python scripts/analyze_runs.py WamCloseCabinetTrayWristLevelerOutcome-v0`:
+
+| Seed | Episodes | Success | Valid fraction | Spill | Timeout | Episode length | Steps to 50% / 90% | Success 0–0.5M / 1.5–2M |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 16275 | 0.764 | 0.983 | 0.032 | 0.206 | 117 | 71k / never | 0.62 / 0.74 |
+| 2 | 32069 | 0.826 | 0.886 | 0.146 | 0.028 | 58 | 56k / 100k | 0.85 / 0.82 |
+| 3 | 28160 | 0.906 | 0.972 | 0.050 | 0.044 | 73 | 45k / 146k | 0.85 / 0.93 |
 
-**Observed (1 seed each).** The gated policy (A24) succeeded on under 30% of either start type and
-timed out on 53–63%. On hand-first starts, most ungated (A25) and outcome-only (A27) successes
-were closed mostly by the hand (61% and 73% of successes). A26 on the tray env timed out on 20.6%
-of episodes against A20's 1.2–4.4% (§7) and never reached 90%. A24 hand-first success (0.28) is
-above the 12% scripted forearm-only floor in §8.1.
+| Slide angle | 15–20° | 20–25° | 25–30° | 30–35° |
+|---|---|---|---|---|
+| Success | 0.763 | 0.840 | 0.850 | 0.875 |
+| Spill | 0.150 | 0.072 | 0.053 | 0.035 |
+| Timeout | 0.088 | 0.089 | 0.096 | 0.090 |
+| Final plate tilt in successful episodes, median | 2.2° | 2.3° | 2.2° | 2.2° |
 
-**Not yet a finding.** Whether the outcome-only reward trades the edge straddle for a different
-stall (A26) needs seeds 2–3 and the timeout profiler; that A27's end-of-episode check fails to keep
-the forearm in use on hand-first starts, and that the gate costs success there, both need seeds 2–3.
+Against A20 (§7): success range [0.764, 0.906] against A20's [0.924, 0.926], no overlap — A26 is
+worse. Seed 1's timeout (20.6%) is far outside the other two (2.8%, 4.4%) and outside A20's whole
+range (1.2–4.4%); seed 1's timeout rate falls over training (30.2% → 22.3% across 0.5M windows)
+but stays high. Spill is not consistently better or worse than A20's 4.5% mean (3.2%, 14.6%, 5.0%).
+
+**Does the edge straddle go away?** Exact replay, 100k steps per seed
+(`scripts/diagnose_timeouts/replay.py`, `analyze2.py`, `torque_balance.py`), against A20 and A22
+from §7.1–7.2:
+
+| | A20 | A22 | A26 |
+|---|---|---|---|
+| Timeouts (of replayed episodes) | 7.4% | 2.6% | 7.0% |
+| Elbow ends at a hard stop | 44% | 4% | **4%** |
+| Pressing-but-stuck (forearm >1N on >80% of last 50 steps, door not moving) | 16% | 41% | 21% |
+| Final door angle: <0.5 rad / >1.0 rad | 42% / 40% | 24% / 49% | **64% / 24%** |
+| Forearm off the door on the last 50 steps (contact <20% of steps) | 70% | 34% | 50% |
+
+Seed 1 contact torques, last 50 steps of timeouts vs successes (`torque_balance.py`): timeouts had
+a median net closing torque of 0.6 N·m against successes' 13.6 N·m, net/total torque ratio 1.00
+(A20 and A22's straddles had ratios near 0, i.e. two contacts cancelling), and a median of 1
+contact per step (not 2).
+
+**Finding.** The elbow-stop failure A22 fixed with the margin observation (44% → 4%) stayed fixed
+in A26 (4%) without that observation — removing the per-step gate and reach shaping also removed
+it, by some other route not identified here. But A26's timeouts are not A20/A22's edge straddle:
+the forearm's contact force produces real, if weak, closing torque (median 0.6 N·m, not near-zero
+from cancelling contacts), on a single contact point, not two. The final door angle in A26's
+timeouts sits much closer to success (64% end under 0.5 rad, against A20's 42% and A22's 24%) than
+either earlier env. **A26 traded the straddle for a slower, noisier close:** more of its timeouts
+are near-misses that ran out of steps, fewer are stuck far from the door.
+
+**Reading.** Dropping reach shaping and the per-step gate changed the shape of A20's failure but
+did not reduce the rate (7.0% against 7.4%) or recover its success. The straddle's signature,
+cancelling torque from two simultaneous contacts, is absent, which is some evidence the outcome
+reward removes the specific trap it was built to remove. But three seeds disagree sharply on
+timeout rate (2.8% to 20.6%) and success (0.764 to 0.906), and overall success is below A20's with
+no overlap, so the outcome reward is not a clean win: it is less prescriptive, as intended, and
+also slower and noisier to train, at least at 2M steps with 3 seeds.
+
+**Taken together, §8.2 and §8.3 narrow what "less prescriptive" bought here.** The outcome reward
+removed one named failure (the straddle's torque-cancelling signature) without matching the dense
+reward's success rate, and on the harder end-effector-first task it did not clearly separate from
+either the gated or ungated dense rewards. Neither result rules out a less prescriptive reward
+working better with more steps, more seeds, or a different task; neither establishes that it does.
