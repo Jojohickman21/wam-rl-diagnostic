@@ -1,0 +1,111 @@
+# Task set for testing generalisation (scope, 2026-11-18)
+
+Status: specification only. Nothing here is built or run.
+
+Why (Ray, 11/18; notes.md): the reward and approach so far were tuned on one task, and §7.2's edge
+straddle shows how a reward can fit one task's geometry. A set of tasks tests whether the reward
+fits the task or the method. The second goal is inference-time generalisation: one policy
+conditioned on the articulation or constraint it faces. Ray named sliding doors, push and pull,
+and objects with different x, y constraints. He ruled out automated reward search for now.
+
+## What carries over from RESULTS.md §1–8
+
+- **Structure:** a controller owns the primary end-effector constraint and RL owns the push (A20,
+  §7). It was the most consistent result, and it is what the rest of the set should test.
+- **Observations:** hardware-measurable only (joint encoders, object articulation state, object
+  pose). Per-link contact forces and friction stay out of observations.
+- **Reward:** two candidates, because §8 did not settle which generalises. Dense gated (A20's)
+  learned better on the original task (§8.3). Outcome-only (A26) removed the straddle signature
+  but learned worse. The task set is the right place to choose between them.
+- **Statistics:** 3 seeds minimum, and a difference counts only if seed ranges do not overlap
+  (noise floor about 4 points of success, §7.3).
+- **Engineering:** speed-test under the trainer's 8 async workers before any launch (§8.1), and
+  save normalisation statistics (done).
+- **Harder starts are a separate axis:** §8's ±1.0 rad starts raised timeouts to 31–78% on every
+  reward. Add hard initialisation per task only after its easy version learns, or the two effects
+  are confounded.
+
+## The tasks
+
+Every task keeps the plate held by the A20 leveler. Each has one coordinate s that measures the
+object's progress, a goal s*, and a range used to normalise reward across tasks.
+
+| ID | Task | Articulation (MuJoCo) | s, s*, range | Contact that moves it | Main risk |
+|---|---|---|---|---|---|
+| T0 | Close hinged door (existing) | hinge, vertical axis | angle, 0, 1.0–1.4 rad | forearm on the door face | none; this is the reference |
+| T1 | Close sliding door | slide, horizontal, in the door plane | lateral offset, 0, 0.25–0.40 m | forearm on the panel's leading edge; a push on the face only gives friction along the slide | the edge is a thin target; may need a vertical handle bar to push on |
+| T2 | Push drawer shut | slide, horizontal, into the cabinet | extension, 0, 0.15–0.30 m | forearm on the drawer front, normal aligned with motion | probably easy; the low-difficulty member |
+| T3 | Pull drawer open | same as T2 | extension, 0.25 m, start 0 | forearm or elbow hooked behind a handle; plain contact cannot pull | highest. Whole-arm pulling needs a hook geometry; may be infeasible without it |
+| T4x | Push box along an x rail | slide x, friction | position, goal 0.20–0.30 m away | forearm on the box side | low |
+| T4y | Push box along a y rail | slide y | as T4x | as T4x | low |
+| T4xy | Push box in the plane | slide x + slide y (no rotation) | distance to goal | as T4x; contact point decides the direction | the push direction has to be steered, which the others do not need |
+
+T4x, T4y and T4xy are the "objects with different constraints". The same box under different
+joint constraints isolates the constraint from the geometry.
+
+**Feasibility gate before any training**, as for A20 (§7): a scripted forearm motion must solve at
+least 30% of starts, and a scripted hand motion must show whether the hand is the easier tool.
+A task that fails is dropped or redesigned before it costs compute. T3 is the likely casualty.
+
+## One reward template for every task
+
+    r_prog = w · (|sₜ₋₁ − s*| − |sₜ − s*|) / range
+
+Reopening is charged at the same rate, as now. Success when |sₜ − s*| < tolerance. The success
+bonus is scaled by the valid-contact share. Spill, energy and force cap are unchanged. Normalising
+by range gives every task the same progress budget, so no task dominates a shared policy's return.
+
+Two variants, run across the whole set:
+- **Dense gated:** progress pays only under valid contact, plus reach shaping to the moving body.
+- **Outcome:** progress pays any closing; valid contact is judged at the end (A26's design).
+
+The gate uses per-link contact forces, which a real xArm cannot measure. That is acceptable in a
+training reward only if the deployed policy never needs them; decide this before building (open
+question 3).
+
+## Conditioning: how one policy knows which task it faces
+
+| Option | Observation added | Generalises to | Cost |
+|---|---|---|---|
+| a. Task one-hot | a vector over T0–T4 | nothing unseen | trivial |
+| b. Constraint descriptor | joint type (hinge or slide), axis (world unit vector), anchor point, s, s*, range | unseen axes and placements of known joint types | a perception step on hardware, like the cabinet pose now |
+| c. Inferred from history | none; recent joint and object motion (RMA-style adaptation) | unknown articulations | harder to train; a later step |
+
+Recommended: **(b)**, with a held-out test. Train on T0–T2 and T4x/T4y at some axes; test on
+unseen axis orientations and on T4xy. That turns "generalisation at inference time" into one
+number. Ray's teacher-student point fits here: a teacher with full object state, distilled into a
+student that sees only the descriptor and encoders.
+
+The primary-task constraint can be conditioned the same way, using WACL's vocabulary: an AxisCone
+(plate or cup upright) or a PositionRegion (TCP inside a box), given to the controller as
+parameters. That is the second axis of "different constraints", and it maps onto the base paper's
+representation (WACL Table 3, App. A.3: AxisCone, PositionRegion).
+
+Contact conditioning ("different whole-arm contacts") would make the allowed link set an input,
+for example a mask over links 4, 5 and 6. It depends on the per-link gate, so it is tied to open
+question 3.
+
+## Staging and cost
+
+Laptop: about 2,000 steps/s, so 2M steps take about 17 minutes. One run at a time.
+
+| Stage | Work | Runs | Laptop time |
+|---|---|---|---|
+| 0 | Refactor the env from "door" to "articulated object with coordinate s" (29 door-specific references). T0 must reset and step bit-identically to now; check it the way §8.1 did. | 0 | build only |
+| 1 | Build T1, T2, T4x, T4y, T4xy (and T3 if attempted); feasibility gate per task | 0 | build only |
+| 2 | Single-task baselines, A20 structure, dense gated, 3 seeds each | 15–18 | 4.5–5 h |
+| 3 | Outcome reward on the same tasks | 15–18 | 4.5–5 h |
+| 4 | One conditioned multi-task policy (option b), held-out test | 3+ | likely 10M+ steps each, about 1.5 h per run; needs lab compute |
+
+Stages 0–2 fit before the Erdem meeting (Wed 11/25). Stage 4 waits on the USC compute access.
+
+## Open questions for Josiah
+
+1. **T3 (pulling):** attempt it, accepting it may fail the feasibility gate, or leave pulling for
+   later? It is the task most unlike pushing and the most informative if it works.
+2. **Conditioning:** option (b) first, or start with (a) to get a multi-task baseline cheaply?
+3. **The gate on hardware:** keep per-link contact in the training reward (sim-only, never in the
+   policy's input), or only use the outcome reward from here on? This decides whether contact
+   conditioning is possible.
+4. **Order:** the full Stage 2 before the Erdem meeting, or T1 and T4x only, to bring a
+   two-task result sooner?
