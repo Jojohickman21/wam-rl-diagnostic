@@ -479,3 +479,63 @@ def test_ee_start_pool_is_seeded_and_holds_only_valid_hand_first_starts():
     for _ in range(10):
         a.reset()
         assert a.data.ncon == 0 and a._outside_door() and a._ee_lead() > EE_LEAD
+
+
+def test_task_t0_reproduces_a20_step_for_step():
+    a20, t0 = gym.make("WamCloseCabinetTrayWristLeveler-v0"), gym.make("WamTaskT0-v0")
+    a20.reset(seed=4)
+    t0.reset(seed=4)
+    rng = np.random.default_rng(4)
+    for _ in range(150):
+        action = rng.uniform(-1, 1, 4).astype(np.float32)
+        _, reward_a, term_a, trunc_a, _ = a20.step(action)
+        _, reward_b, term_b, trunc_b, _ = t0.step(action)
+        assert np.array_equal(a20.unwrapped.data.qpos, t0.unwrapped.data.qpos)
+        assert reward_a == reward_b and term_a == term_b and trunc_a == trunc_b
+        if term_a or trunc_a:
+            a20.reset()
+            t0.reset()
+
+
+@pytest.mark.parametrize("task", ["T1", "T2", "T3", "T4x", "T4y", "T4xy"])
+def test_task_envs_start_out_of_contact_with_descriptor(task):
+    from wam.tasks import SLOT_SIZE, TASKS
+
+    env = gym.make(f"WamTask{task}-v0")
+    u = env.unwrapped
+    for seed in range(5):
+        obs, info = env.reset(seed=seed)
+        assert obs.shape == env.observation_space.shape == (59,)
+        assert env.action_space.shape == (4,)
+        assert u.data.ncon == 0 and u._outside_door()
+        slots = u.descriptor().reshape(2, SLOT_SIZE)
+        assert slots[0, 0] == 1.0 and slots[0, 2] == 1.0  # slot 0 holds a slide joint
+        assert slots[1, 0] == float(len(TASKS[task]["joints"]) == 2)
+        assert info["task/distance"] > TASKS[task]["tol"]
+    env.close()
+
+
+@pytest.mark.parametrize("task", ["T1", "T2", "T4x"])
+def test_task_movers_stop_within_a_few_control_steps_like_the_door(task):
+    env = gym.make(f"WamTask{task}-v0")
+    u = env.unwrapped
+    env.reset(seed=0)
+    u.data.qvel[u.qvel_adr[0]] = 0.5
+    for _ in range(3):
+        env.step(np.zeros(4, np.float32))
+    assert abs(u.data.qvel[u.qvel_adr[0]]) < 0.05
+    env.close()
+
+
+def test_task_progress_pays_like_the_door_per_unit_of_range():
+    from wam.close_cabinet import W_PROGRESS
+    from wam.tasks import TaskEnv
+
+    env = TaskEnv(task="T4x", gated=False)
+    env.reset(seed=0)
+    before = env._distance()
+    env.data.qvel[env.qvel_adr[0]] = 0.3 * np.sign(env.goal[0])
+    _, _, _, _, info = env.step(np.zeros(4, np.float32))
+    closed = before - env._distance()
+    assert closed > 0
+    assert info["reward/progress"] == pytest.approx(W_PROGRESS * 1.2 / 0.25 * closed, rel=1e-6)

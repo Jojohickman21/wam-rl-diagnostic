@@ -1,6 +1,10 @@
 # Task set for testing generalisation (scope, 2026-11-18)
 
-Status: specification only. Nothing here is built or run.
+Status: built 2026-11-18 (`wam/tasks.py`, `assets/task_*.xml`, envs `WamTask<ID>-v0` and
+`WamTask<ID>Outcome-v0`). Decisions (Josiah, 11/18): T1 gets a vertical handle bar; attempt T3, and
+if it fails the feasibility gate, add pull goals (negative positions) to T4; condition with the
+constraint descriptor (option b); per-link contact forces are acceptable in the training reward;
+run everything on the lab server (snoopy1).
 
 Why (Ray, 11/18; notes.md): the reward and approach so far were tuned on one task, and §7.2's edge
 straddle shows how a reward can fit one task's geometry. A set of tasks tests whether the reward
@@ -109,3 +113,28 @@ Stages 0–2 fit before the Erdem meeting (Wed 11/25). Stage 4 waits on the USC 
    conditioning is possible.
 4. **Order:** the full Stage 2 before the Erdem meeting, or T1 and T4x only, to bring a
    two-task result sooner?
+
+## Build notes and feasibility gate (2026-11-18)
+
+- **T0 reproduces A20 exactly.** Same seed and actions give identical joint states, rewards and
+  terminations over 2,400 random steps (test `test_task_t0_reproduces_a20_step_for_step`).
+- **Movers must not coast.** The first build gave the slide joints light damping (velocity time
+  constant about 0.4 s), so a single hit glided the object most of the way and that motion counted
+  as invalid closing. Damping is now about mass / 0.02 s, as for the hinged door (REWARD_DESIGN.md
+  exploit 3): 150 N·s/m for the panel and drawer, 100 for the box.
+- **Gate** (`scripts/task_feasibility.py <task> 30`): a scripted forearm push, tried with four
+  forearm points (elbow end to wrist end), the wrist leveler holding the plate. A start counts as
+  solved if any point closes it with valid fraction > 0.9.
+
+| Task | Solved forearm-only | Gate |
+|---|---|---|
+| T1 sliding door (handle bar) | 93% | pass |
+| T2 drawer push | 80% | pass |
+| T4x box, x rail | 100% | pass |
+| T3 drawer pull | 0% (never got the forearm into the handle gap) | fail |
+| T4y box, y rail (motion at azimuth −30°) | 23% | fail |
+| T4xy box, planar | 7% | fail |
+
+The scripted controller moves one forearm point and cannot set the forearm's orientation, so a
+failed gate is a lower bound, not proof of infeasibility. Per the decisions above, T3's failure
+triggers pull goals on T4. T4y and T4xy are being redesigned before any training.

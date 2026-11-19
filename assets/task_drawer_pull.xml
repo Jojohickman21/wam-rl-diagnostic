@@ -1,0 +1,29 @@
+<!--
+  T3 drawer pull: open a closed drawer. Plain contact cannot pull, so a horizontal handle stands 13 cm proud of the front (posts at y = +-0.12); the forearm (about 8.5 cm thick) must hook into the gap and draw it toward the robot. Real drawer pulls stand 3-4 cm proud: this geometry is chosen to make whole-arm pulling possible at all, and is a test, not a realistic handle.
+  The drawer slides along the fixture's x axis, which points out of the chest toward the arm
+  (fixture yaw 210 degrees, so closing pushes toward azimuth 30 degrees: part sweep, part
+  extension). Joint position e is the extension: e = 0 closed.
+  Joint damping is about mass / 0.02 s, so the object stops within about one control step
+  once pushing stops, as the hinged door does (REWARD_DESIGN.md exploit 3); with light damping
+  it coasts for ~20 steps and a single hit can close it.
+-->
+<mujoco model="task_drawer_pull">
+  <include file="task_common.xml"/>
+  <worldbody>
+    <body name="fixture" pos="0.68 -0.03 0.45" euler="0 0 3.6652">
+      <geom name="chest" class="env" type="box" size="0.2 0.2 0.16" pos="-0.21 0 0" material="wood"/>
+      <body name="mover">
+        <joint name="slide" type="slide" axis="1 0 0" range="0 0.35" damping="150" frictionloss="2" armature="0.01"/>
+        <geom name="front" class="env" type="box" size="0.01 0.18 0.11" pos="0 0 0" mass="1" material="door"/>
+        <geom name="drawer_box" class="env" type="box" size="0.15 0.16 0.08" pos="-0.16 0 0" mass="2" material="door"/>
+        <geom name="handle" class="env" type="capsule" fromto="0.13 -0.12 0 0.13 0.12 0" size="0.012" mass="0.1" material="metal"/>
+        <geom name="handle_post_l" class="env" type="box" size="0.065 0.008 0.008" pos="0.075 -0.12 0" mass="0.05" material="metal"/>
+        <geom name="handle_post_r" class="env" type="box" size="0.065 0.008 0.008" pos="0.075 0.12 0" mass="0.05" material="metal"/>
+        <site name="push_point" pos="0 0 0" size="0.01"/>
+      </body>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="home" qpos="-0.75 1.0 0 2.5708 -1.5708 1.925 0  0" ctrl="-0.75 1.0 0 2.5708 -1.5708 1.925 0"/>
+  </keyframe>
+</mujoco>

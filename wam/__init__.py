@@ -201,3 +201,11 @@ gym.register(
     max_episode_steps=250,
     kwargs={**_EE_LEVELER, "outcome_reward": True},
 )
+# Task set (TASK_SET.md): A20's structure on every task, constraint descriptor in the observation.
+from wam.tasks import TASKS as _TASKS  # noqa: E402
+
+for _task in _TASKS:
+    gym.register(id=f"WamTask{_task}-v0", entry_point="wam.tasks:TaskEnv", max_episode_steps=250,
+                 kwargs={"task": _task})
+    gym.register(id=f"WamTask{_task}Outcome-v0", entry_point="wam.tasks:TaskEnv", max_episode_steps=250,
+                 kwargs={"task": _task, "outcome_reward": True})

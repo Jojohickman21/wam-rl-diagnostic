@@ -1,0 +1,24 @@
+<!--
+  T4y: a 10 x 10 x 24 cm, 2 kg box held at forearm height on slide joint(s) along the
+  fixture's own axes (fixture yaw 60 degrees: local x is tangent to the forearm's sweep, local y
+  points toward azimuth 150). Joint damping and friction loss stand in for table friction. The
+  same box under different joint constraints separates the constraint from the geometry.
+  Joint damping is about mass / 0.02 s, so the object stops within about one control step
+  once pushing stops, as the hinged door does (REWARD_DESIGN.md exploit 3); with light damping
+  it coasts for ~20 steps and a single hit can close it.
+-->
+<mujoco model="task_box_y">
+  <include file="task_common.xml"/>
+  <worldbody>
+    <body name="fixture" pos="0.42 -0.12 0.45" euler="0 0 1.0472">
+      <body name="mover">
+        <joint name="slide_y" type="slide" axis="0 1 0" range="-0.5 0.5" damping="100" frictionloss="4" armature="0.01"/>
+        <geom name="box" class="env" type="box" size="0.05 0.05 0.12" mass="2" material="wood"/>
+        <site name="push_point" pos="0 0 0" size="0.01"/>
+      </body>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="home" qpos="-0.75 1.0 0 2.5708 -1.5708 1.925 0  0" ctrl="-0.75 1.0 0 2.5708 -1.5708 1.925 0"/>
+  </keyframe>
+</mujoco>
