@@ -695,30 +695,33 @@ except A24 seed 3, still rising (0.43 → 0.47 over the last two windows). Timeo
 episodes) are far above anything in §4–7 (under 5% except A23's 6.2%), so this task is harder in
 this setup than any earlier one, independent of the gate question.
 
-**Finding.** The gate did suppress hand use: successes closed mostly by the hand fell from 59%
-under A25 (ungated) to 41% under A24 (gated), on hand-first starts, seed ranges not overlapping.
-But the gate did not confine the hand to hand-first starts — it cut hand use from 4–6% to 6–7% of
-successes on normal starts too, where the forearm was already the easier tool, which is noise, not
-suppression. **The gate's cost in success is the same size on both start types.** Mean success
-under the gate (A24) is about 27 points below ungated (A25) on hand-first starts (0.271 against
-0.571) and about 26 points below on normal starts (0.297 against 0.556), both outside §7.3's noise
-floor. If the gate's cost were specifically the price of being forced onto the harder tool, it
-should cost more on hand-first starts than on normal ones; it does not. A24's hand-first success
-(mean 0.271) does clear the 27% scripted forearm-only floor from §8.1, so the task is not
-infeasible for the gated policy, but one seed (0.061) falls under even that, and the three seeds
-disagree enough (0.061 to 0.472) that the floor comparison should not be read seed by seed.
-A27 (outcome reward, no per-step gate) behaves like A25 in tool choice (59% vs 59%) but scores 8
-points below it on hand-first starts, seed ranges not overlapping (0.491 against 0.571) — an
-end-of-episode check alone did not recover ungated's success.
+**Finding.** Against the bar (seed ranges must not overlap):
 
-**Reading.** The result does not separate "the gate is expensive because the hand is objectively
-easier here" from "this harder task (wide starts, the leveler, mixed start types) is just more
-brittle to train with a per-step contact constraint, on any start." The second reading fits the
-data better: a uniform cost across start types is what a general training-difficulty tax looks
-like, not a tool-specific one. This cuts against reading A24–A25's gap as evidence the gate forces
-worse contact choices specifically when the hand is easier; it is evidence the gate makes a harder
-task harder to learn, which is a narrower and less interesting claim. Three seeds and no run
-reaching 90% success means none of this is settled; a longer run or more seeds could move it.
+- **Established:** on hand-first starts the gate lowered success. A24 0.061–0.472 against A25
+  0.558–0.588. The outcome reward (A27, 0.440–0.532) also scored below ungated there.
+- **Not established:** that the gate reduced hand use. Successes closed mostly by the hand average
+  41% under A24 against 59% under A25 on hand-first starts, but the seed ranges overlap (0.289–0.478
+  against 0.439–0.705). On normal starts hand use is small under every reward (1–13%) and the gate
+  does not lower it.
+- **Not established:** that the gate's cost is the same on both start types. Mean success under the
+  gate is about 30 points below ungated on hand-first starts (0.271 against 0.571) and about 26
+  below on normal starts (0.297 against 0.556), but on normal starts the ranges overlap by about a
+  point (0.118–0.482 against 0.471–0.632).
+- A27 matches A25 in tool choice (59% of hand-first successes closed mostly by the hand under
+  both, ranges overlapping): an end-of-episode valid-contact check alone did not keep the forearm
+  in use.
+
+A24 seed 2 (hand-first success 0.061) sits below the 27% scripted forearm-only floor from §8.1;
+seeds 1 and 3 sit above it. The seeds disagree too much (0.061 to 0.472) to read the floor
+comparison as anything but "the gated task is not infeasible".
+
+**Reading.** If the gate's cost were the price of being forced onto the harder tool, it should be
+larger on hand-first starts than on normal ones. The means suggest it is about the same on both,
+which would make it a general training tax of a per-step contact constraint on a harder task
+(wide starts, the leveler, mixed start types), not a tool-specific cost. With overlap on normal
+starts, three seeds and no run reaching 90%, that reading is a hypothesis, not a result. What is
+solid: on starts where the hand is nearer, dense gated shaping learned the task worse than no
+gate, and neither the gate nor the end-of-episode check produced clean forearm-only behaviour.
 
 ### 8.3 A26: outcome reward on A20's tray env (3 seeds, 2026-11-18)
 
