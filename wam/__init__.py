@@ -209,3 +209,8 @@ for _task in _TASKS:
                  kwargs={"task": _task})
     gym.register(id=f"WamTask{_task}Outcome-v0", entry_point="wam.tasks:TaskEnv", max_episode_steps=250,
                  kwargs={"task": _task, "outcome_reward": True})
+# Stage 4: one policy over T0, T1, T4x and T4xneg (the same rail, goals on both sides); T2 is held out.
+gym.register(id="WamMultiTask-v0", entry_point="wam.tasks:MultiTaskEnv", max_episode_steps=250,
+             kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg")})
+gym.register(id="WamMultiTaskOutcome-v0", entry_point="wam.tasks:MultiTaskEnv", max_episode_steps=250,
+             kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg"), "outcome_reward": True})

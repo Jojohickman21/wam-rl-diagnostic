@@ -136,5 +136,46 @@ Stages 0–2 fit before the Erdem meeting (Wed 11/25). Stage 4 waits on the USC 
 | T4xy box, planar | 7% | fail |
 
 The scripted controller moves one forearm point and cannot set the forearm's orientation, so a
-failed gate is a lower bound, not proof of infeasibility. Per the decisions above, T3's failure
-triggers pull goals on T4. T4y and T4xy are being redesigned before any training.
+failed gate is a lower bound, not proof of infeasibility.
+
+**T3 (pull) failed three scripted designs**, so pulling was dropped per the decisions above:
+1. Position-only, coming down into the handle gap from above: 0%. The forearm never entered the gap.
+2. With an added term turning the forearm parallel to the handle (`scripts/t3_hook_feasibility.py`):
+   0%. The alignment reached 4–19°, but the forearm point stayed 10–31 cm from the hook pose
+   with joints 2 and 4 far from their stops. The pose is out of reach: laying the forearm across a
+   handle 0.6 m from the base needs more reach than joints 1–4 have while the wrist is levelling.
+3. The chest moved so the handle sits about 0.4 m out: aligned above the gap on up to 25% of starts,
+   into the gap on none.
+Reading: with this arm, a levelled wrist and 4 learned joints, the forearm pushes objects along
+its sweep, but getting behind an object and drawing it toward the body is not shown to be
+feasible. Reaching behind the T4 box from above to draw it back failed the same way (0%).
+
+**T4 redesign.** The pull fallback is implemented as negative goals on the x rail with the arm
+starting on the box's far side (`home_yaw` 0.9 rad added to joint 1): T4xneg. To be explicit: that
+is the forearm pushing from the other side, not drawing toward the body. It puts goals of both
+signs on one constraint, which is what the conditioning test needs. T4y (a radial rail) failed in
+every orientation tried (at most 23%, or no valid start at all). T4xy now draws its goal within ±30°
+of the rail's x axis instead of across 90°: the box is free in the plane, but the goal stays
+pushable.
+
+| Task | Solved forearm-only | Gate |
+|---|---|---|
+| T4xneg (x rail, negative goal, far-side start) | 67% | pass |
+| T4xy (planar, goal within ±30° of x) | 33% | pass, marginal |
+| T4y | ≤23% | fail, not trained |
+
+**Start sampling could hang.** For 2% of T4xneg's fixture poses no valid far-side start exists, and
+the rejection loop never ended (found by a multi-task test that hung). After 1,000 arm draws the
+pose and goal are now redrawn. Every other task needs at most a few draws, so their starts, and
+T0's match with A20, are unchanged (tested).
+
+## What runs on snoopy1 (2026-11-18)
+
+| Stage | Envs | Seeds | Steps | Notes |
+|---|---|---|---|---|
+| 2 + 3 | T0, T1, T2, T4x; dense gated and outcome | 3 | 2M | array 79719, started 18:24 |
+| 2 + 3 | T4xneg, T4xy; dense gated and outcome | 3 | 2M | starts when 79719 finishes |
+| 4 | `WamMultiTask-v0`: one policy over T0, T1, T4x, T4xneg, dense gated | 3 | 10M | T2 held out; evaluate with `scripts/eval_policy.py`, including fixture yaw ±40° |
+
+At most 6 runs at once (60 CPUs), under the lab's half-server rule. About 30 minutes per 2M-step
+run on snoopy1 (about 1,000–1,200 steps/s per run, slower per run than the laptop's 2,000).

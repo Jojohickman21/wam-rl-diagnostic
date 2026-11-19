@@ -33,12 +33,15 @@ from wam.close_cabinet import (
 ASSETS = Path(__file__).parents[1] / "assets"
 DOOR_RANGE = 1.2  # rad; W_PROGRESS is per rad of door, so a task's progress weight is W_PROGRESS · 1.2 / range
 SLOTS = 2
+MAX_START_TRIES = 1000  # arm draws per fixture pose before the pose is redrawn
 SLOT_SIZE = 13
 
 # outward: unit vector in the mover's frame; at reset every distal arm geom must lie on that side
 # of the plane through the mover's origin, so the arm starts on the side it has to push from.
 # goal: ("fixed", values) or ("axis", lo, hi, sign) for a distance along the single joint, or
 # ("planar", lo, hi, angle_lo, angle_hi) for a direction in the fixture's xy plane.
+# home_yaw (optional): radians added to joint 1 of the home posture the start is drawn around,
+# so the arm can start on the far side of the object for negative goals.
 TASKS = {
     "T0": dict(scene="close_cabinet.xml", fixture="cabinet", mover="door", joints=("door_hinge",),
                start=(1.0, 1.4), goal=("fixed", (0.0,)), range=DOOR_RANGE, tol=0.05, outward=(0, -1, 0)),
@@ -50,10 +53,13 @@ TASKS = {
                start=(0.0, 0.02), goal=("fixed", (0.25,)), range=0.25, tol=0.015, outward=(1, 0, 0)),
     "T4x": dict(scene="task_box_x.xml", fixture="fixture", mover="mover", joints=("slide_x",),
                 start=(0.0, 0.0), goal=("axis", 0.20, 0.30, 1.0), range=0.25, tol=0.02, outward=None),
+    "T4xneg": dict(scene="task_box_x.xml", fixture="fixture", mover="mover", joints=("slide_x",),
+                   start=(0.0, 0.0), goal=("axis", 0.20, 0.30, -1.0), range=0.25, tol=0.02, outward=None,
+                   home_yaw=0.9),
     "T4y": dict(scene="task_box_y.xml", fixture="fixture", mover="mover", joints=("slide_y",),
                 start=(0.0, 0.0), goal=("axis", 0.20, 0.30, -1.0), range=0.25, tol=0.02, outward=None),
     "T4xy": dict(scene="task_box_xy.xml", fixture="fixture", mover="mover", joints=("slide_x", "slide_y"),
-                 start=(0.0, 0.0), goal=("planar", 0.25, 0.25, -np.pi / 2, 0.0), range=0.25, tol=0.02,
+                 start=(0.0, 0.0), goal=("planar", 0.25, 0.25, -np.pi / 6, np.pi / 6), range=0.25, tol=0.02,
                  outward=None),
 }
 
@@ -141,6 +147,16 @@ class TaskEnv(CloseCabinetEnv):
     # ---------- start state ----------
 
     def _draw_start(self):
+        """Draw a fixture pose and goal, then arm starts until one is valid. Some poses admit none
+        (2% of T4xneg's far-side draws), so after MAX_START_TRIES the pose and goal are redrawn.
+        The other tasks need at most a handful of tries, so their draws, and T0's match with A20,
+        are unchanged."""
+        while True:
+            start = self._draw_start_for_pose()
+            if start is not None:
+                return start
+
+    def _draw_start_for_pose(self):
         shift, turn = self.cabinet_spread
         self.cabinet_yaw = self.np_random.uniform(-turn, turn)
         if self.tray_object:
@@ -153,20 +169,22 @@ class TaskEnv(CloseCabinetEnv):
                                   self.fixture_yaw0 + self.cabinet_yaw)
         self._draw_goal()
         lo, hi = self.spec_["start"]
-        while True:
+        home = self.home[:7].copy()
+        home[0] += self.spec_.get("home_yaw", 0.0)
+        for _ in range(MAX_START_TRIES):
             for adr in self.qpos_adr:
                 self.data.qpos[adr] = self.np_random.uniform(lo, hi) if hi > lo else lo
             spread = self.np_random.uniform(-self.start_spread, self.start_spread, 7)
-            self.data.qpos[:7] = np.clip(self.home[:7] + spread, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
+            self.data.qpos[:7] = np.clip(home + spread, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
             self._level_plate()
             if self.tray_object:
                 self._place_object()
             mujoco.mj_forward(self.model, self.data)
             tray_clear = not self.tray_object or self.data.geom_xpos[self.plate_geom][2] > MIN_TRAY_HEIGHT
             if self.data.ncon == 0 and self._plate_tilt() < START_TILT and self._outside_door() and tray_clear:
-                break
-        return (self.model.body_pos[self.fixture_body].copy(), self.cabinet_yaw, self.tilt_max,
-                self.data.qpos.copy())
+                return (self.model.body_pos[self.fixture_body].copy(), self.cabinet_yaw, self.tilt_max,
+                        self.data.qpos.copy())
+        return None
 
     def _draw_goal(self):
         """Fixed goals draw nothing, so T0 keeps A20's random sequence."""
@@ -342,3 +360,35 @@ class TaskEnv(CloseCabinetEnv):
         info["task/distance_norm"] = distance / self.spec_["range"]
         info["task/success"] = float(distance < self.spec_["tol"])
         return info
+
+
+class MultiTaskEnv(gym.Env):
+    """One TaskEnv per task; every reset draws a task uniformly. Spaces are identical across
+    tasks, so the constraint descriptor in the observation is the only thing that tells the
+    policy which task it faces. `task/index` in info says which one ran."""
+
+    metadata = TaskEnv.metadata
+
+    def __init__(self, tasks=("T0", "T1", "T4x"), **kwargs):
+        self.tasks = tuple(tasks)
+        self.envs = [TaskEnv(task=task, **kwargs) for task in self.tasks]
+        self.observation_space = self.envs[0].observation_space
+        self.action_space = self.envs[0].action_space
+        self.current = 0
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.current = int(self.np_random.integers(len(self.envs)))
+        sub_seed = int(self.np_random.integers(2**31 - 1))
+        obs, info = self.envs[self.current].reset(seed=sub_seed)
+        info["task/index"] = float(self.current)
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.envs[self.current].step(action)
+        info["task/index"] = float(self.current)
+        return obs, reward, terminated, truncated, info
+
+    def close(self):
+        for env in self.envs:
+            env.close()

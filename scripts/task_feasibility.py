@@ -30,6 +30,7 @@ SCRIPT = {
     "T2": dict(offset=0.04 + 0.01 + 0.01, lift=0.0, point="push_point"),
     "T3": dict(offset=0.04 + 0.012 + 0.01, lift=0.15, point="handle"),
     "T4x": dict(offset=0.04 + 0.05 + 0.01, lift=0.0, point="push_point"),
+    "T4xneg": dict(offset=0.04 + 0.05 + 0.01, lift=0.0, point="push_point"),
     "T4y": dict(offset=0.04 + 0.05 + 0.01, lift=0.0, point="push_point"),
     "T4xy": dict(offset=0.04 + 0.07 + 0.01, lift=0.0, point="push_point"),
 }

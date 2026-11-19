@@ -497,7 +497,7 @@ def test_task_t0_reproduces_a20_step_for_step():
             t0.reset()
 
 
-@pytest.mark.parametrize("task", ["T1", "T2", "T3", "T4x", "T4y", "T4xy"])
+@pytest.mark.parametrize("task", ["T1", "T2", "T3", "T4x", "T4xneg", "T4y", "T4xy"])
 def test_task_envs_start_out_of_contact_with_descriptor(task):
     from wam.tasks import SLOT_SIZE, TASKS
 
@@ -539,3 +539,15 @@ def test_task_progress_pays_like_the_door_per_unit_of_range():
     closed = before - env._distance()
     assert closed > 0
     assert info["reward/progress"] == pytest.approx(W_PROGRESS * 1.2 / 0.25 * closed, rel=1e-6)
+
+
+def test_multitask_env_draws_every_training_task_with_one_observation_shape():
+    env = gym.make("WamMultiTask-v0")
+    seen = set()
+    obs, info = env.reset(seed=0)
+    for _ in range(40):
+        obs, info = env.reset()
+        assert obs.shape == (59,)
+        seen.add(int(info["task/index"]))
+    assert seen == {0, 1, 2, 3}
+    env.close()
