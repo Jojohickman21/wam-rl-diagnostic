@@ -116,7 +116,8 @@ Stages 0–2 fit before the Erdem meeting (Wed 11/25). Stage 4 waits on the USC 
 
 ## Build notes and feasibility gate (2026-11-18)
 
-- **T0 reproduces A20 exactly.** Same seed and actions give identical joint states, rewards and
+- **T0 reproduces A20's dynamics and rewards exactly** (not its observation: 59 dimensions with the
+  descriptor against A20's 35; see RESULTS.md §9.1). Same seed and actions give identical joint states, rewards and
   terminations over 2,400 random steps (test `test_task_t0_reproduces_a20_step_for_step`).
 - **Movers must not coast.** The first build gave the slide joints light damping (velocity time
   constant about 0.4 s), so a single hit glided the object most of the way and that motion counted

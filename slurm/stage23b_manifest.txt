@@ -1,0 +1,12 @@
+WamTaskT4xneg-v0 1
+WamTaskT4xnegOutcome-v0 1
+WamTaskT4xy-v0 1
+WamTaskT4xyOutcome-v0 1
+WamTaskT4xneg-v0 2
+WamTaskT4xnegOutcome-v0 2
+WamTaskT4xy-v0 2
+WamTaskT4xyOutcome-v0 2
+WamTaskT4xneg-v0 3
+WamTaskT4xnegOutcome-v0 3
+WamTaskT4xy-v0 3
+WamTaskT4xyOutcome-v0 3

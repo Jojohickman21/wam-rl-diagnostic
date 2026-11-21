@@ -784,3 +784,150 @@ removed one named failure (the straddle's torque-cancelling signature) without m
 reward's success rate, and on the harder end-effector-first task it did not clearly separate from
 either the gated or ungated dense rewards. Neither result rules out a less prescriptive reward
 working better with more steps, more seeds, or a different task; neither establishes that it does.
+
+## 9. The task set on snoopy1: reward across tasks, and the held-out T2 test (2026-11-21)
+
+All 39 runs ran on snoopy1 (SLURM arrays 79719, 79732, 79733; one run per job, 8 async envs, 10 CPUs,
+`--save-model`) and finished with exit 0. All 39 logs have the full number of updates (976 for 2M
+steps, 4,882 for 10M), and every run has a model and `obs_rms.npz`. Environment: conda `wam`,
+MuJoCo 3.3.7, torch 2.4.1, as for every earlier result (`requirements-results.txt`). Cluster runs
+used the same trainer and hyperparameters as the laptop runs; they are about half the speed per run.
+Task definitions, the feasibility gate and the constraint descriptor are in TASK_SET.md.
+
+### 9.1 One reward template, six tasks, two reward versions (2M steps, 3 seeds each)
+
+`python scripts/analyze_runs.py WamTask<ID>[Outcome]-v0` for each row. Means over each seed's last
+500 episodes. Success is the per-seed value for seeds 1 / 2 / 3.
+
+| Task | Reward | Success (seeds 1 / 2 / 3) | Mean success | Mean spill | Mean timeout | Mean valid fraction | Steps to 90% (seeds 1 / 2 / 3) |
+|---|---|---|---|---|---|---|---|
+| T0 hinged door | dense gated | 0.820 / 0.898 / 0.832 | 0.850 | 0.076 | 0.075 | 0.946 | 137k / 142k / 83k |
+| T0 hinged door | outcome | 0.844 / 0.928 / 0.840 | 0.871 | 0.063 | 0.066 | 0.954 | 367k / 149k / 299k |
+| T1 sliding door + handle bar | dense gated | 0.932 / 0.976 / 0.972 | 0.960 | 0.033 | 0.007 | 0.963 | 47k / 47k / 35k |
+| T1 sliding door + handle bar | outcome | 0.976 / 0.936 / 0.968 | 0.960 | 0.034 | 0.007 | 0.963 | 52k / 63k / 57k |
+| T2 drawer push | dense gated | 0.922 / 0.906 / 0.840 | 0.889 | 0.044 | 0.067 | 0.977 | 231k / 176k / 334k |
+| T2 drawer push | outcome | 0.676 / 0.886 / 0.798 | 0.787 | 0.089 | 0.125 | 0.933 | never / 323k / never |
+| T4x box, x rail | dense gated | 0.894 / 0.914 / 0.864 | 0.891 | 0.073 | 0.037 | 0.950 | 77k / 106k / 47k |
+| T4x box, x rail | outcome | 0.848 / 0.904 / 0.804 | 0.852 | 0.081 | 0.068 | 0.943 | 230k / 123k / 43k |
+| T4xneg box, x rail, negative goal | dense gated | 0.916 / 0.904 / 0.832 | 0.884 | 0.041 | 0.077 | 0.837 | 225k / 155k / never |
+| T4xneg box, x rail, negative goal | outcome | 0.906 / 0.920 / 0.884 | 0.903 | 0.036 | 0.061 | 0.755 | 98k / 128k / 386k |
+| T4xy box, planar | dense gated | 0.080 / 0.070 / 0.108 | 0.086 | 0.215 | 0.699 | 0.896 | never / never / never |
+| T4xy box, planar | outcome | 0.080 / 0.098 / 0.070 | 0.083 | 0.147 | 0.771 | 0.868 | never / never / never |
+
+"Dense gated" is A20's reward (progress under the per-step contact gate, reach shaping, wrong-contact
+penalty); "outcome" is A26's (progress for any closing, no reach shaping or per-step gate, the
+success bonus scaled by valid contact at the end). Progress is normalised by each task's range, so a
+full close is worth the same on every task (TASK_SET.md). T0 here has A20's dynamics, start distribution and rewards,
+and a test confirms identical joint states, rewards and terminations step for step under the same
+actions. It is **not** the same learning problem as A20: the observation is the 59-dimensional
+descriptor form (A20's is 35-dimensional), so A20's results and these cannot be pooled.
+
+**A20 and T0 differ, and the cause is not isolated.** T0 dense gated is the nearest thing here to
+A20 (§7: success 0.924 / 0.926 / 0.924, same seeds 1 to 3). It scores 0.820 / 0.898 / 0.832, with
+ranges that do not overlap, so by the bar the task-set version is worse. Two changes happen
+together and were not separated: the observation (35 to 59 dimensions, with the descriptor) and the
+machine (snoopy1's CPU build of torch against the laptop's). Nothing in these runs says which
+mattered. The practical consequence is that absolute numbers on the cluster should not be compared
+with laptop numbers from §1 to §8; within-cluster comparisons, which is all this section makes,
+are unaffected.
+
+**Finding.** Five of six tasks are learned by both rewards in 2M steps: mean success 0.79 to 0.96,
+with no per-task reward tuning beyond the range normalisation. T1 is the easiest (0.96 for both
+rewards, 90% success by about 35k to 63k steps). T4xy is not learned by either reward: success 0.07
+to 0.11, 70 to 77% timeouts, never near 90% on any of the six seeds.
+
+Against the bar (seed ranges must not overlap), **dense gated and outcome are indistinguishable on
+every task**: the ranges overlap on all six pairs. The nearest to separating is T2, where dense gated
+is 0.840 to 0.922 and outcome 0.676 to 0.886; the means are 10 points apart (0.889 against 0.787) and
+two of the three outcome seeds never reached 90%, but the ranges overlap by 4.6 points, so this is
+not established. Outcome's valid fraction on T4xneg (0.755) is below dense gated's (0.837), the one
+place the reward changes how the door or box is closed rather than whether; three seeds do not say
+whether that gap is real.
+
+**Reading.** This is the clearest answer so far to Ray's reward-generalisation question: the reward
+that was tuned on the hinged door (and for which §7.2 found a task-specific trap) transfers to a
+sliding door, a drawer and two box-pushing constraints without changes, and the less prescriptive
+outcome reward does no better or worse on any of them at this sample size. It is not evidence the
+reward would work on tasks unlike pushing (T3 failed the feasibility gate, TASK_SET.md), and T4xy
+shows a case, a box free to move in the plane, where neither reward learns in 2M steps. Why T4xy
+fails was not investigated: the scripted gate solved only 33% of its starts, so it may be a task that
+is hard for four joints and a levelled wrist, or one that needs more steps or exploration help.
+Per-task timeout profiles and the check for the §7.2 edge-straddle on the new tasks were not done.
+
+### 9.2 One policy over four tasks, with T2 held out (10M steps, 3 seeds)
+
+`WamMultiTask-v0`: every episode draws one of T0, T1, T4x or T4xneg; the observation has the same
+shape on all of them, so the constraint descriptor (joint type, world axis and anchor, position,
+velocity, goal, range) is all that says which task is running. Dense gated reward, 10M steps. T2 is
+never seen in training. Training-log result, pooled over the four tasks: success 0.644 to 0.876 (mean
+0.773), steps to 90% success 300k / 157k / never.
+
+Evaluation: `python scripts/eval_policy.py <train env> <seed> <task> 200 [yaw spread]`. Actions are
+sampled from the policy as in training, with the trained observation normalisation frozen (it cannot
+drift on an unseen task). 200 episodes per seed, fresh start seeds. Fixture yaw ±20° is the training
+range; ±40° is wider than any run saw. These use a different measurement from the training-log
+tables above (frozen statistics, new seeds), so the single-task policies were re-evaluated with the
+same script for the like-for-like rows.
+
+**Held-out task T2, success (seeds 1 / 2 / 3):**
+
+| Policy | Trained on | Yaw ±20° | Mean | Range | Mean spill | Mean timeout | Yaw ±40° (mean, range) |
+|---|---|---|---|---|---|---|---|
+| Multi-task | T0, T1, T4x, T4xneg (T2 never seen) | 0.115 / 0.655 / 0.330 | 0.367 | 0.115–0.655 | 0.215 | 0.418 | 0.327, 0.110–0.605 |
+| T1 only | T1 | 0.280 / 0.000 / 0.150 | 0.143 | 0.000–0.280 | 0.413 | 0.443 | 0.125, 0.000–0.240 |
+| T4x only | T4x | 0.385 / 0.010 / 0.100 | 0.165 | 0.010–0.385 | 0.388 | 0.447 | 0.143, 0.025–0.300 |
+| T2 only (ceiling) | T2 | 0.935 / 0.935 / 0.840 | 0.903 | 0.840–0.935 | 0.053 | 0.043 | 0.802, 0.740–0.870 |
+
+The T1-only and T4x-only rows are the control the question needs. They are single-task policies with
+the same observation format, trained on one task each, so they show what pushing skill carries to
+T2 without having learned to read a descriptor across several tasks.
+
+**Finding (held-out T2).** The multi-task policy reaches 0.367 on average, against 0.143 and 0.165 for
+the single-task controls and 0.903 for a policy trained on T2. Against the bar, **the multi-task
+policy is not shown to transfer better than the controls**: its range (0.115 to 0.655) overlaps both
+controls' (0.000 to 0.280 and 0.010 to 0.385). The means are 20 points apart, so this is a lead, not
+a result, and it depends on one seed: seed 2 reaches 0.655 and seed 1 only 0.115. Two things are
+solid. The ceiling is far above any zero-shot policy (0.84 to 0.94 against at most 0.655), so T2 is a
+task that is learnable and not transferred by any of these policies. And every zero-shot policy
+fails differently from the trained one: spill is 21 to 41% and timeouts 42 to 45%, against 5% and
+4%, so the held-out failures are mostly the plate tipping and the arm not finishing. Contact
+validity of the episodes that do succeed is high but not uniform: the valid fraction of successes
+is 0.94 to 1.0 for every policy and seed except one (T4x-only seed 2, 0.492, on 2 successes in 200
+episodes), and undefined for T1-only seed 2, which never succeeded.
+
+At yaw ±40° T2 results barely move (multi-task 0.367 to 0.327, controls 0.143 to 0.125, trained
+0.903 to 0.802), so fixture orientation is a smaller factor than which task it is.
+
+**In-distribution, like for like (frozen statistics, yaw ±20°, success seeds 1 / 2 / 3):**
+
+| Task | Single-task policy | Multi-task policy | Ranges overlap? |
+|---|---|---|---|
+| T0 | 0.830 / 0.885 / 0.795 (mean 0.837) | 0.495 / 0.840 / 0.670 (mean 0.668) | yes |
+| T1 | 0.940 / 0.990 / 0.970 (mean 0.967) | 0.960 / 0.935 / 0.815 (mean 0.903) | yes |
+| T4x | 0.920 / 0.930 / 0.910 (mean 0.920) | 0.865 / 0.890 / 0.510 (mean 0.755) | no, multi-task lower |
+| T4xneg | 0.895 / 0.960 / 0.765 (mean 0.873) | 0.730 / 0.750 / 0.755 (mean 0.745) | no, multi-task lower by 1 point at the edge |
+
+The multi-task policy is lower on average on all four tasks (6 to 17 points), and clearly lower
+(non-overlapping ranges) on two; the T4xneg separation rests on 0.755 against 0.765. Seed 3 is the
+weak seed on T1 and T4x and never reached 90% in training; seed 1 is the weak seed on T0 and
+T2. Across seeds, the multi-task policy's T0 and T2 results rank the same way (seed 2 best, then 3,
+then 1), which is weak evidence that T2 transfer follows overall policy quality, not task-specific
+conditioning. Three seeds cannot test that.
+
+**Reading.** A single policy conditioned on the constraint descriptor learns four tasks in 10M steps
+but is worse than separate policies on each, and its zero-shot result on an unseen drawer-push is
+better than single-task policies on average but not by a margin the data can separate from
+seed-to-seed variation. The honest summary for Ray's question about conditioning: the descriptor
+carries enough to learn several tasks with one policy, but this experiment does not show that it
+carries enough to generalise to a task it never saw. What would settle it: more seeds (the seed 2
+result alone could carry the mean), a harder held-out test (T4xy-like), a held-out task closer to
+and further from the training tasks, and a longer run, since seed 3 had not reached 90% by 10M steps.
+Also untested: whether option (a), a plain task label, does as well on the training tasks, which
+would say whether the descriptor does anything the label does not.
+
+### 9.3 What this does not show
+
+- T3 (pulling) failed the feasibility gate, so nothing here is evidence about pulling.
+- T4xneg is a push from the far side, not a pull toward the body (TASK_SET.md).
+- Timeout and failure profiles per task, and the §7.2 straddle check, were not run on the new tasks.
+- One robot, perfect state, simulation only, 3 seeds, single-task runs at 2M steps and multi-task at 10M.

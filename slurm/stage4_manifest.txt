@@ -1,0 +1,3 @@
+WamMultiTask-v0 1
+WamMultiTask-v0 2
+WamMultiTask-v0 3
