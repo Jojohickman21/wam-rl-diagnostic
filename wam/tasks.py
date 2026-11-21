@@ -35,6 +35,7 @@ DOOR_RANGE = 1.2  # rad; W_PROGRESS is per rad of door, so a task's progress wei
 SLOTS = 2
 MAX_START_TRIES = 1000  # arm draws per fixture pose before the pose is redrawn
 SLOT_SIZE = 13
+LABEL_SLOT = (0, 9, 10, 11, 12)  # valid, s, ṡ, s*, range: the slot without the joint's geometry
 
 # outward: unit vector in the mover's frame; at reset every distal arm geom must lie on that side
 # of the plane through the mover's origin, so the arm starts on the side it has to push from.
@@ -68,7 +69,7 @@ class TaskEnv(CloseCabinetEnv):
 
     def __init__(self, task="T0", render_mode=None, gated=True, start_spread=0.5,
                  cabinet_spread=(0.1, np.radians(20)), tray_object=True, observe_object=False,
-                 energy_penalty=True, wrist_leveler=True, outcome_reward=False):
+                 energy_penalty=True, wrist_leveler=True, outcome_reward=False, labels=None):
         spec_ = TASKS[task]
         self.task = task
         self.spec_ = spec_
@@ -137,7 +138,15 @@ class TaskEnv(CloseCabinetEnv):
 
         self.action_space = gym.spaces.Box(-1.0, 1.0, (4 if wrist_leveler else 7,), np.float32)
         self.limited_joints = np.flatnonzero(np.ptp(self.ctrl_range, axis=1) < 4 * np.pi - 0.01)
-        size = 28 + 5 + SLOTS * SLOT_SIZE + 6 * self.observe_object
+        # Option (a) of TASK_SET.md: with `labels` (the training tasks, in order), the joint's type,
+        # axis and anchor leave the observation and a one-hot over `labels` takes their place. A task
+        # not in `labels` gets all zeros, so a held-out task carries no task information at all.
+        self.labels = tuple(labels) if labels is not None else None
+        if self.labels is None:
+            condition = SLOTS * SLOT_SIZE
+        else:
+            condition = SLOTS * len(LABEL_SLOT) + len(self.labels)
+        size = 28 + 5 + condition + 6 * self.observe_object
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (size,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
@@ -263,6 +272,14 @@ class TaskEnv(CloseCabinetEnv):
             ])
         return slots.ravel()
 
+    def condition(self):
+        """What tells the policy which task this is: the descriptor, or the label form of it."""
+        slots = self.descriptor()
+        if self.labels is None:
+            return slots
+        one_hot = np.array([float(task == self.task) for task in self.labels])
+        return np.concatenate([slots.reshape(SLOTS, SLOT_SIZE)[:, LABEL_SLOT].ravel(), one_hot])
+
     # ---------- step and reward ----------
 
     def step(self, action):
@@ -344,7 +361,7 @@ class TaskEnv(CloseCabinetEnv):
             q[:7], qvel[:7], self.q_target - q[:7], self.last_action,
             self.model.body_pos[self.fixture_body][:2], [np.cos(yaw), np.sin(yaw)],
             [self.tilt_max if self.observe_slide_angle else TILT_MAX],
-            self.descriptor(),
+            self.condition(),
         ]
         if self.observe_object:
             to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
@@ -369,9 +386,10 @@ class MultiTaskEnv(gym.Env):
 
     metadata = TaskEnv.metadata
 
-    def __init__(self, tasks=("T0", "T1", "T4x"), **kwargs):
+    def __init__(self, tasks=("T0", "T1", "T4x"), task_labels=False, **kwargs):
         self.tasks = tuple(tasks)
-        self.envs = [TaskEnv(task=task, **kwargs) for task in self.tasks]
+        labels = self.tasks if task_labels else None
+        self.envs = [TaskEnv(task=task, labels=labels, **kwargs) for task in self.tasks]
         self.observation_space = self.envs[0].observation_space
         self.action_space = self.envs[0].action_space
         self.current = 0

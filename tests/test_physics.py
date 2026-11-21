@@ -551,3 +551,19 @@ def test_multitask_env_draws_every_training_task_with_one_observation_shape():
         seen.add(int(info["task/index"]))
     assert seen == {0, 1, 2, 3}
     env.close()
+
+
+def test_label_baseline_swaps_geometry_for_a_one_hot_and_blanks_unseen_tasks():
+    from wam.tasks import TaskEnv
+
+    labels = ("T0", "T1", "T4x", "T4xneg")
+    desc, lab = TaskEnv(task="T1"), TaskEnv(task="T1", labels=labels)
+    a, _ = desc.reset(seed=2)
+    b, _ = lab.reset(seed=2)
+    assert a.shape == (59,) and b.shape == (47,)
+    assert np.array_equal(a[:33], b[:33])
+    slot = a[33:46]
+    assert np.allclose(b[33:38], slot[[0, 9, 10, 11, 12]])
+    assert list(b[-4:]) == [0.0, 1.0, 0.0, 0.0]
+    held, _ = TaskEnv(task="T2", labels=labels).reset(seed=0)
+    assert not held[-4:].any()

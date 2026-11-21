@@ -214,3 +214,7 @@ gym.register(id="WamMultiTask-v0", entry_point="wam.tasks:MultiTaskEnv", max_epi
              kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg")})
 gym.register(id="WamMultiTaskOutcome-v0", entry_point="wam.tasks:MultiTaskEnv", max_episode_steps=250,
              kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg"), "outcome_reward": True})
+# Task-label baseline (TASK_SET.md option a): the same four tasks, the joint geometry in the observation
+# replaced by a one-hot task label. On a held-out task the label is all zeros.
+gym.register(id="WamMultiTaskLabel-v0", entry_point="wam.tasks:MultiTaskEnv", max_episode_steps=250,
+             kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg"), "task_labels": True})

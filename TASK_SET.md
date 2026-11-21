@@ -180,3 +180,21 @@ T0's match with A20, are unchanged (tested).
 
 At most 6 runs at once (60 CPUs), under the lab's half-server rule. About 30 minutes per 2M-step
 run on snoopy1 (about 1,000–1,200 steps/s per run, slower per run than the laptop's 2,000).
+
+## Follow-up runs (2026-11-21): more seeds and the task-label baseline
+
+RESULTS.md §9.2 could not separate the descriptor-conditioned policy from single-task controls on
+held-out T2 with 3 seeds. Follow-up, on snoopy1, same trainer and hyperparameters:
+
+| Env | What it is | New seeds | Steps |
+|---|---|---|---|
+| `WamMultiTask-v0` | descriptor conditioning (option b), T0/T1/T4x/T4xneg | 4–8 (8 total) | 10M |
+| `WamMultiTaskLabel-v0` | **task-label baseline (option a)**: same tasks, each slot keeps [valid, s, ṡ, s*, range] but drops joint type, axis and anchor; a one-hot over the 4 training tasks is appended (observation 47). On held-out T2 the one-hot is all zeros. | 1–8 | 10M |
+| `WamTaskT1-v0`, `WamTaskT4x-v0` | single-task controls for the held-out test | 4–8 (8 total) | 2M |
+| `WamTaskT2-v0` | T2 ceiling | 4–8 (8 total) | 2M |
+
+The label baseline isolates what the joint geometry adds over a task ID: both policies see the
+object's position, velocity, goal and range. On T2, the descriptor policy sees a new joint
+geometry, while the label policy sees no task identity at all. Comparison bar unchanged: a
+difference counts only if seed ranges do not overlap. With 8 seeds that bar is stricter than with
+3, so a rank-sum test across seeds is reported alongside it, as a second look, not a replacement.
