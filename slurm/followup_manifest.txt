@@ -1,0 +1,13 @@
+WamMultiTaskLabel-v0 1
+WamMultiTaskLabel-v0 2
+WamMultiTaskLabel-v0 3
+WamMultiTaskLabel-v0 4
+WamMultiTaskLabel-v0 5
+WamMultiTaskLabel-v0 6
+WamMultiTaskLabel-v0 7
+WamMultiTaskLabel-v0 8
+WamMultiTask-v0 4
+WamMultiTask-v0 5
+WamMultiTask-v0 6
+WamMultiTask-v0 7
+WamMultiTask-v0 8

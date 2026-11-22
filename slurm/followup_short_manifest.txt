@@ -1,0 +1,15 @@
+WamTaskT1-v0 4
+WamTaskT4x-v0 4
+WamTaskT2-v0 4
+WamTaskT1-v0 5
+WamTaskT4x-v0 5
+WamTaskT2-v0 5
+WamTaskT1-v0 6
+WamTaskT4x-v0 6
+WamTaskT2-v0 6
+WamTaskT1-v0 7
+WamTaskT4x-v0 7
+WamTaskT2-v0 7
+WamTaskT1-v0 8
+WamTaskT4x-v0 8
+WamTaskT2-v0 8
