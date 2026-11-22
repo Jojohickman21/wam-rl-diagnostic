@@ -931,3 +931,135 @@ would say whether the descriptor does anything the label does not.
 - T4xneg is a push from the far side, not a pull toward the body (TASK_SET.md).
 - Timeout and failure profiles per task, and the §7.2 straddle check, were not run on the new tasks.
 - One robot, perfect state, simulation only, 3 seeds, single-task runs at 2M steps and multi-task at 10M.
+
+## 10. More seeds, a task-label baseline, and failure profiles on the new tasks (2026-11-22, partial)
+
+**Status: partial.** 28 follow-up runs went to snoopy1 on 11/21 (arrays 81790, 81796). 13 of them
+were cancelled by SLURM preemption partway through, saved no model, and were not requeued. My
+launcher still logged them as "done, exit 0". It wrote the progress line regardless of what
+happened, so its log hid the failures. They were found by checking every run's update count and
+model file. The partial folders and logs are in `runs/aborted/` on the server. The 13 runs were
+relaunched on 11/22 with a fixed launcher: requeue on preemption, clear unfinished folders on
+restart, and log the real exit status and whether a model was saved. Everything below uses only
+the 15 runs that completed plus the earlier section 9 runs. It will be updated when the reruns finish.
+
+Evaluations: `scripts/run_followup_evals.sh`, which runs `scripts/eval_policy.py` (frozen
+normalisation, sampled actions, 200 episodes, fixture yaw ±20°) for every seed that has a model,
+writing to `runs/diagnostics/evals/`. Profiles: `scripts/diagnose_timeouts/run_task_profiles.sh`
+(exact replays, 60k steps per seed), summarised by `task_profile.py --summary`, with counts in
+`runs/diagnostics/profiles/counts.txt`.
+
+### 10.1 The task-label baseline
+
+`WamMultiTaskLabel-v0` (TASK_SET.md, option a): the same four training tasks as the descriptor
+policy (T0, T1, T4x, T4xneg), 10M steps. Each joint slot keeps [valid, position, velocity, goal,
+range] but drops the joint's type, axis and anchor, and a one-hot over the four tasks is appended
+(observation 47, against 59). On held-out T2 the one-hot is all zeros, so this policy gets **no**
+task identity there; the descriptor policy gets T2's joint geometry, which no training task had.
+
+### 10.2 Held-out T2 with more seeds
+
+Success on T2, every seed with a saved model:
+
+| Policy | Seeds | Success per seed | Mean | Median | Range | Mean spill | Mean timeout |
+|---|---|---|---|---|---|---|---|
+| Descriptor, 4 training tasks | 1–4 | 0.115 / 0.655 / 0.330 / 0.050 | 0.288 | 0.223 | 0.050–0.655 | 0.376 | 0.336 |
+| Task label, same 4 tasks | 2–5 | 0.520 / 0.500 / 0.560 / 0.485 | 0.516 | 0.510 | 0.485–0.560 | 0.136 | 0.347 |
+| T1 only | 1–7 | 0.280 / 0.000 / 0.150 / 0.140 / 0.690 / 0.415 / 0.100 | 0.254 | 0.150 | 0.000–0.690 | 0.423 | 0.324 |
+| T4x only | 1–6 | 0.385 / 0.010 / 0.100 / 0.550 / 0.040 / 0.255 | 0.223 | 0.177 | 0.010–0.550 | 0.400 | 0.377 |
+| T2 only (ceiling) | 1–6 | 0.935 / 0.935 / 0.840 / 0.800 / 0.915 / 0.740 | 0.861 | 0.877 | 0.740–0.935 | 0.068 | 0.072 |
+
+Comparisons. Seed ranges overlap in every one; p is the exact two-sided rank-sum test across seeds,
+reported as a second look, not a replacement for the bar:
+
+| Comparison | Means | p |
+|---|---|---|
+| Descriptor vs label | 0.288 vs 0.516 | 0.34 |
+| Descriptor vs T1-only | 0.288 vs 0.254 | 1.00 |
+| Descriptor vs T4x-only | 0.288 vs 0.223 | 0.61 |
+| Descriptor vs both controls pooled | 0.288 vs 0.240 | 0.77 |
+| Label vs T1-only | 0.516 vs 0.254 | 0.07 |
+| Label vs T4x-only | 0.516 vs 0.223 | 0.07 |
+
+**Finding.** **The descriptor policy's lead in §9.2 does not survive more seeds.** Its fourth seed
+scores 0.050, which brings the mean from 0.367 to 0.288. The controls' extra seeds lift theirs, with
+T1-only seed 5 at 0.690. With up to 7 seeds, the descriptor policy and the single-task controls are
+indistinguishable on T2 (p 0.61 to 1.00). §9.2 called the 20-point gap "a lead, not a result"; it
+was seed noise.
+
+The label policy does best on T2 and is by far the most consistent: 0.485 to 0.560 on all four seeds,
+with spill 14% against 38 to 42% for every other zero-shot policy. Its advantage is not established:
+ranges overlap and p is 0.07 against the controls, on 4 seeds. Nothing reaches the ceiling, which is
+0.74 to 0.94 for a policy trained on T2.
+
+**In distribution**, descriptor seeds 1–4 against label seeds 2–5 on the training tasks, success
+per seed:
+
+| Task | Descriptor | Label | p |
+|---|---|---|---|
+| T0 | 0.495 / 0.840 / 0.670 / 0.420 (mean 0.606) | 0.650 / 0.840 / 0.805 / 0.765 (mean 0.765) | 0.37 |
+| T1 | 0.960 / 0.935 / 0.815 / 0.815 (mean 0.881) | 0.955 / 0.895 / 0.950 / 0.955 (mean 0.939) | 0.49 |
+| T4x | 0.865 / 0.890 / 0.510 / 0.435 (mean 0.675) | 0.795 / 0.550 / 0.855 / 0.740 (mean 0.735) | 1.00 |
+| T4xneg | 0.730 / 0.750 / 0.755 / 0.820 (mean 0.764) | 0.910 / 0.735 / 0.765 / 0.845 (mean 0.814) | 0.34 |
+
+The label policy's mean is higher on all four tasks; no difference is separable.
+
+**Reading (inference, not tested).** On this evidence the joint geometry in the descriptor does not
+help: not on the training tasks, and not on the held-out one. One reading fits both the label
+policy's consistency and the descriptor policy's erratic T2 results. On T2 the descriptor policy
+receives joint-axis and anchor values outside anything it trained on, an out-of-distribution input
+in 6 of its 59 numbers. The label policy only loses its one-hot, so it behaves like an average of
+its training tasks, and that happens to suit a drawer push. A direct test would evaluate the
+descriptor policy on T2 with the axis and anchor replaced by a training task's values. That was not
+run. Four seeds of each are not enough to rule out that the order reverses at 8.
+
+### 10.3 Failure profiles on the new tasks (seeds 1–3, both rewards)
+
+Exact replays from the saved normalisation statistics. Replay success matches the training logs
+within about 2 points (T0 0.838 vs 0.850, T1 0.959 vs 0.960, T2 0.905 vs 0.889, T4xy 0.091 vs 0.086).
+Counts are episodes pooled over three seeds. "Stuck" means a timeout with forearm contact on more
+than 80% of its last 50 steps and no motion. "Off" means forearm contact on under 20% of those
+steps. "At a stop" means a joint within 0.05 rad of a hard limit at the end. An "early spill"
+tips the plate before 10% progress, with no forearm contact at all.
+
+| Task, reward | Episodes | Spills | Timeouts | Stuck | Off the object | Joint at a stop | Early spills |
+|---|---|---|---|---|---|---|---|
+| T0 dense | 2,260 | 192 | 175 | 31 | 109 | 75 | 102 of 192 |
+| T0 outcome | 2,249 | 123 | 180 | 18 | 141 | 39 | 44 of 123 |
+| T1 dense | 3,056 | 111 | 15 | 4 | 7 | 0 | 83 of 111 |
+| T1 outcome | 3,077 | 87 | 16 | 4 | 6 | 2 | 57 of 87 |
+| T2 dense | 2,273 | 115 | 103 | 5 | 86 | 33 | 17 of 115 |
+| T2 outcome | 2,051 | 169 | 225 | 4 | 202 | 77 | 45 of 169 |
+| T4x dense | 2,905 | 223 | 79 | 3 | 74 | 29 | 87 of 223 |
+| T4x outcome | 2,408 | 197 | 174 | 6 | 159 | 34 | 91 of 197 |
+| T4xneg dense | 2,150 | 72 | 175 | 9 | 155 | 32 | 24 of 72 |
+| T4xneg outcome | 2,616 | 96 | 131 | 15 | 98 | 70 | 16 of 96 |
+| T4xy dense | 824 | 167 | 582 | 2 | 472 | 9 | 23 of 167 |
+| T4xy outcome | 795 | 105 | 622 | 2 | 566 | 53 | 26 of 105 |
+
+**Finding.**
+
+1. **The edge straddle of §7.2 does not recur on the new tasks.** Stuck pushing is 2 to 15
+   episodes per group on T1–T4xy, under 11% of timeouts. Too few to characterise; anecdotally, the
+   handful on T1 push perpendicular to the slide (zero force along the axis, as on the panel's face
+   rather than the bar), and the 5 on T2 dense have cancelling contacts (net/total 0.10).
+2. **The dominant timeout on every new task is the forearm off the object at the end:** 74 to 94%
+   of timeouts on T2, T4x, T4xneg and T4xy. The arm has lost or never regained contact. It is not
+   pressing on something that won't move.
+3. **A joint at a hard stop recurs:** 32 to 53% of timeouts on T2 outcome, T4xneg outcome and T0
+   dense, echoing A20 in §7.1 (44%). It is near zero on T1.
+4. **T1's remaining failures are early spills.** 83 of 111 dense spills tip the plate before any
+   progress and without touching the panel (median step 10). That is the policy's opening motion,
+   not the task.
+5. **T4xy fails by losing the box, not by being stuck:** 81 to 91% of its timeouts end with the
+   forearm off the box, median distance left 0.41 to 0.50 of the range. So the box usually moves
+   about halfway before contact is lost. One hypothesis: the box, free in the plane, slides
+   sideways off the forearm. That was not measured: the profile records the distance to the goal,
+   not the direction of the error.
+
+**Reading.** The new tasks fail differently from the door. The reward's §7.2 loophole, a contact
+the gate accepts that cannot move the object, did not reappear when the geometry changed. That
+fits it being a property of the door's top edge, not of the reward. What does recur is the arm
+losing contact (off-object timeouts) and joints running into stops. Neither the dense reward nor
+the outcome reward prevents either one. A contact-maintenance or joint-margin signal is the next
+thing to test, and per §7.2–7.3 an observation alone did not fix the stops.
