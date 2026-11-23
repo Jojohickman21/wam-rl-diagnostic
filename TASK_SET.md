@@ -198,3 +198,10 @@ object's position, velocity, goal and range. On T2, the descriptor policy sees a
 geometry, while the label policy sees no task identity at all. Comparison bar unchanged: a
 difference counts only if seed ranges do not overlap. With 8 seeds that bar is stricter than with
 3, so a rank-sum test across seeds is reported alongside it, as a second look, not a replacement.
+
+**Outcome (2026-11-23, RESULTS.md §10):** all 8 seeds of every policy completed after preempted
+runs were rerun. On held-out T2 no policy separates (descriptor 0.349, label 0.422, single-task
+controls 0.27 and 0.26, every range overlapping, smallest p 0.068). In distribution the descriptor
+and label policies are indistinguishable on all four tasks. The joint geometry adds nothing
+measurable over a task label in this setup. Next informative test: a held-out task interpolated
+between training tasks.

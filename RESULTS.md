@@ -932,16 +932,16 @@ would say whether the descriptor does anything the label does not.
 - Timeout and failure profiles per task, and the §7.2 straddle check, were not run on the new tasks.
 - One robot, perfect state, simulation only, 3 seeds, single-task runs at 2M steps and multi-task at 10M.
 
-## 10. More seeds, a task-label baseline, and failure profiles on the new tasks (2026-11-22, partial)
+## 10. More seeds, a task-label baseline, and failure profiles on the new tasks (2026-11-23)
 
-**Status: partial.** 28 follow-up runs went to snoopy1 on 11/21 (arrays 81790, 81796). 13 of them
-were cancelled by SLURM preemption partway through, saved no model, and were not requeued. My
-launcher still logged them as "done, exit 0". It wrote the progress line regardless of what
-happened, so its log hid the failures. They were found by checking every run's update count and
-model file. The partial folders and logs are in `runs/aborted/` on the server. The 13 runs were
-relaunched on 11/22 with a fixed launcher: requeue on preemption, clear unfinished folders on
-restart, and log the real exit status and whether a model was saved. Everything below uses only
-the 15 runs that completed plus the earlier section 9 runs. It will be updated when the reruns finish.
+**Runs.** 28 follow-up runs went to snoopy1 on 11/21 (arrays 81790, 81796). SLURM preemption
+cancelled 13 of them partway through. They saved no model and were not requeued, yet my launcher
+logged each as "done, exit 0": it wrote the progress line regardless of what had happened. Checking
+every run's update count and model file caught them. Their partial folders and logs are in
+`runs/aborted/` on the server. The 13 were rerun on 11/22 (arrays 82727, 82728) with a fixed
+launcher that requeues on preemption, clears unfinished folders on restart, and logs the real exit
+status and whether a model was saved. All 13 reruns finished with full update counts and a saved
+model, and none was preempted. Every policy below now has 8 seeds.
 
 Evaluations: `scripts/run_followup_evals.sh`, which runs `scripts/eval_policy.py` (frozen
 normalisation, sampled actions, 200 episodes, fixture yaw ±20°) for every seed that has a model,
@@ -957,61 +957,78 @@ range] but drops the joint's type, axis and anchor, and a one-hot over the four 
 (observation 47, against 59). On held-out T2 the one-hot is all zeros, so this policy gets **no**
 task identity there; the descriptor policy gets T2's joint geometry, which no training task had.
 
-### 10.2 Held-out T2 with more seeds
+### 10.2 Held-out T2 with 8 seeds
 
-Success on T2, every seed with a saved model:
+Success on T2 (`python scripts/summarize_followup.py`, from `runs/diagnostics/evals/`):
 
 | Policy | Seeds | Success per seed | Mean | Median | Range | Mean spill | Mean timeout |
 |---|---|---|---|---|---|---|---|
-| Descriptor, 4 training tasks | 1–4 | 0.115 / 0.655 / 0.330 / 0.050 | 0.288 | 0.223 | 0.050–0.655 | 0.376 | 0.336 |
-| Task label, same 4 tasks | 2–5 | 0.520 / 0.500 / 0.560 / 0.485 | 0.516 | 0.510 | 0.485–0.560 | 0.136 | 0.347 |
-| T1 only | 1–7 | 0.280 / 0.000 / 0.150 / 0.140 / 0.690 / 0.415 / 0.100 | 0.254 | 0.150 | 0.000–0.690 | 0.423 | 0.324 |
-| T4x only | 1–6 | 0.385 / 0.010 / 0.100 / 0.550 / 0.040 / 0.255 | 0.223 | 0.177 | 0.010–0.550 | 0.400 | 0.377 |
-| T2 only (ceiling) | 1–6 | 0.935 / 0.935 / 0.840 / 0.800 / 0.915 / 0.740 | 0.861 | 0.877 | 0.740–0.935 | 0.068 | 0.072 |
+| Descriptor, 4 training tasks | 1,2,3,4,5,6,7,8 | 0.115 / 0.655 / 0.330 / 0.050 / 0.290 / 0.575 / 0.410 / 0.370 | 0.349 | 0.350 | 0.050–0.655 | 0.265 | 0.386 |
+| Task label, same 4 tasks | 1,2,3,4,5,6,7,8 | 0.220 / 0.520 / 0.500 / 0.560 / 0.485 / 0.340 / 0.350 / 0.405 | 0.422 | 0.445 | 0.220–0.560 | 0.179 | 0.399 |
+| T1 only | 1,2,3,4,5,6,7,8 | 0.280 / 0.000 / 0.150 / 0.140 / 0.690 / 0.415 / 0.100 / 0.405 | 0.273 | 0.215 | 0.000–0.690 | 0.416 | 0.311 |
+| T4x only | 1,2,3,4,5,6,7,8 | 0.385 / 0.010 / 0.100 / 0.550 / 0.040 / 0.255 / 0.220 / 0.505 | 0.258 | 0.237 | 0.010–0.550 | 0.421 | 0.321 |
+| T2 only (ceiling) | 1,2,3,4,5,6,7,8 | 0.935 / 0.935 / 0.840 / 0.800 / 0.915 / 0.740 / 0.685 / 0.850 | 0.838 | 0.845 | 0.685–0.935 | 0.069 | 0.094 |
 
-Comparisons. Seed ranges overlap in every one; p is the exact two-sided rank-sum test across seeds,
-reported as a second look, not a replacement for the bar:
+Comparisons. The bar: a difference counts only if seed ranges do not overlap. p is the exact
+two-sided rank-sum test across seeds, a second look, not a replacement for the bar:
 
-| Comparison | Means | p |
-|---|---|---|
-| Descriptor vs label | 0.288 vs 0.516 | 0.34 |
-| Descriptor vs T1-only | 0.288 vs 0.254 | 1.00 |
-| Descriptor vs T4x-only | 0.288 vs 0.223 | 0.61 |
-| Descriptor vs both controls pooled | 0.288 vs 0.240 | 0.77 |
-| Label vs T1-only | 0.516 vs 0.254 | 0.07 |
-| Label vs T4x-only | 0.516 vs 0.223 | 0.07 |
-
-**Finding.** **The descriptor policy's lead in §9.2 does not survive more seeds.** Its fourth seed
-scores 0.050, which brings the mean from 0.367 to 0.288. The controls' extra seeds lift theirs, with
-T1-only seed 5 at 0.690. With up to 7 seeds, the descriptor policy and the single-task controls are
-indistinguishable on T2 (p 0.61 to 1.00). §9.2 called the 20-point gap "a lead, not a result"; it
-was seed noise.
-
-The label policy does best on T2 and is by far the most consistent: 0.485 to 0.560 on all four seeds,
-with spill 14% against 38 to 42% for every other zero-shot policy. Its advantage is not established:
-ranges overlap and p is 0.07 against the controls, on 4 seeds. Nothing reaches the ceiling, which is
-0.74 to 0.94 for a policy trained on T2.
-
-**In distribution**, descriptor seeds 1–4 against label seeds 2–5 on the training tasks, success
-per seed:
-
-| Task | Descriptor | Label | p |
+| Comparison | Means | Ranges overlap | p |
 |---|---|---|---|
-| T0 | 0.495 / 0.840 / 0.670 / 0.420 (mean 0.606) | 0.650 / 0.840 / 0.805 / 0.765 (mean 0.765) | 0.37 |
-| T1 | 0.960 / 0.935 / 0.815 / 0.815 (mean 0.881) | 0.955 / 0.895 / 0.950 / 0.955 (mean 0.939) | 0.49 |
-| T4x | 0.865 / 0.890 / 0.510 / 0.435 (mean 0.675) | 0.795 / 0.550 / 0.855 / 0.740 (mean 0.735) | 1.00 |
-| T4xneg | 0.730 / 0.750 / 0.755 / 0.820 (mean 0.764) | 0.910 / 0.735 / 0.765 / 0.845 (mean 0.814) | 0.34 |
+| Descriptor vs label | 0.349 vs 0.422 | yes | 0.505 |
+| Descriptor vs T1-only | 0.349 vs 0.273 | yes | 0.574 |
+| Descriptor vs T4x-only | 0.349 vs 0.258 | yes | 0.328 |
+| Descriptor vs both controls pooled | 0.349 vs 0.265 | yes | 0.343 |
+| Label vs T1-only | 0.422 vs 0.273 | yes | 0.111 |
+| Label vs T4x-only | 0.422 vs 0.258 | yes | 0.137 |
+| Label vs both controls pooled | 0.422 vs 0.265 | yes | 0.068 |
 
-The label policy's mean is higher on all four tasks; no difference is separable.
+**Finding.** **No policy is shown to transfer to the held-out task better than any other.** Every
+range overlaps, and no p is below 0.05. The descriptor policy (mean 0.349) is indistinguishable from
+the single-task controls (0.273 and 0.258; p 0.33 to 0.57) and from the label policy (0.422; p 0.51).
+The label policy is the nearest to a difference, against the pooled controls (0.422 vs 0.265,
+p 0.068), so it is the only lead worth a further test. All zero-shot policies are far below the
+ceiling: 0.685 to 0.935 for a policy trained on T2, against at most 0.690 for any zero-shot seed.
+Zero-shot spill is lower for the label policy (18%) than for the descriptor (27%) and the controls
+(42%). Spill is the one consistent difference in failure mode, but it was not tested across seeds.
 
-**Reading (inference, not tested).** On this evidence the joint geometry in the descriptor does not
-help: not on the training tasks, and not on the held-out one. One reading fits both the label
-policy's consistency and the descriptor policy's erratic T2 results. On T2 the descriptor policy
-receives joint-axis and anchor values outside anything it trained on, an out-of-distribution input
-in 6 of its 59 numbers. The label policy only loses its one-hot, so it behaves like an average of
-its training tasks, and that happens to suit a drawer push. A direct test would evaluate the
-descriptor policy on T2 with the axis and anchor replaced by a training task's values. That was not
-run. Four seeds of each are not enough to rule out that the order reverses at 8.
+**How the estimate moved with seeds:**
+
+| Seeds per policy | Descriptor mean | Label mean | Reading at the time |
+|---|---|---|---|
+| 3 (§9.2) | 0.367 | – | a 20-point lead over the controls, "a lead, not a result" |
+| 4 (§10, partial) | 0.288 | 0.516 | the descriptor lead gone; the label policy looked best and most consistent (0.485–0.560) |
+| 8 (final) | 0.349 | 0.422 | nothing separable; the label policy's range widened to 0.220–0.560 |
+
+Each partial reading reversed when more seeds came in. Single seeds here range from 0.00 to 0.69
+for the same policy, so 3 or 4 seeds cannot rank these policies. That is the main methodological
+result of this section.
+
+**In distribution**, the descriptor and label policies on the four training tasks (8 seeds each):
+
+| Task | Descriptor | Label | Ranges overlap | p |
+|---|---|---|---|---|
+| T0 | 0.495 / 0.840 / 0.670 / 0.420 / 0.740 / 0.790 / 0.825 / 0.635 (mean 0.677) | 0.315 / 0.650 / 0.840 / 0.805 / 0.765 / 0.705 / 0.665 / 0.820 (mean 0.696) | yes | 0.824 |
+| T1 | 0.960 / 0.935 / 0.815 / 0.815 / 0.940 / 0.965 / 0.900 / 0.810 (mean 0.892) | 0.930 / 0.955 / 0.895 / 0.950 / 0.955 / 0.940 / 0.940 / 0.935 (mean 0.938) | yes | 0.399 |
+| T4x | 0.865 / 0.890 / 0.510 / 0.435 / 0.765 / 0.750 / 0.910 / 0.515 (mean 0.705) | 0.645 / 0.795 / 0.550 / 0.855 / 0.740 / 0.930 / 0.815 / 0.895 (mean 0.778) | yes | 0.505 |
+| T4xneg | 0.730 / 0.750 / 0.755 / 0.820 / 0.550 / 0.675 / 0.790 / 0.535 (mean 0.701) | 0.395 / 0.910 / 0.735 / 0.765 / 0.845 / 0.570 / 0.850 / 0.655 (mean 0.716) | yes | 0.574 |
+
+The label policy's mean is higher on all four tasks, and no difference is separable (p 0.40 to 0.82).
+
+**Reading.** At 10M steps and 8 seeds, the joint geometry in the descriptor buys nothing measurable
+over a plain task label, on the training tasks or on an unseen one. A policy conditioned on either
+learns four tasks, but neither generalises to a fifth well enough to stand out from policies trained
+on a single, different task. That answers Ray's conditioning question for this setup in the
+negative, with the caveats that matter:
+- one held-out task, nearer to some training tasks than others;
+- 10M steps per multi-task policy; longer training was not tried;
+- only the geometric form of the descriptor tested, with no richer conditioning (contact location, a
+  learned encoder, history).
+
+The out-of-distribution explanation from the partial draft (the descriptor's T2 axis and anchor lie
+outside anything it trained on) remains untested. With no reliable gap left to explain, it is no
+longer needed to account for the data. The test that would still be informative is a held-out task
+interpolated between training tasks, for example a slide axis between T1's and T4x's, where the
+descriptor has something to interpolate and a label does not.
 
 ### 10.3 Failure profiles on the new tasks (seeds 1–3, both rewards)
 
