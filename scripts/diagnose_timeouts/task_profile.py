@@ -4,7 +4,7 @@ Replays runs/<env>__train_ppo__<seed>__* with its saved obs_rms.npz (pooled over
 actions sampled as in training, and records per episode: outcome, distances, contacts, and how
 hard the forearm pushes the object toward its goal. Writes one .npy of episode dicts.
 
-    python scripts/diagnose_timeouts/task_profile.py <env id> <seed> <steps> <out.npy>
+    python scripts/diagnose_timeouts/task_profile.py <env id> <seed> <steps> <out.npy> [task]
     python scripts/diagnose_timeouts/task_profile.py --summary <out*.npy>
 
 "Push toward goal" generalises the door's hinge torque (§7.2): for each forearm (links 4-6)
@@ -12,6 +12,10 @@ contact, the force it puts on the mover is turned into a generalised force on ea
 (torque about the axis for a hinge, force along the axis for a slide) and projected on the
 direction from the joint state to the goal. Net/total near 0 with several contacts means pushes
 that cancel, the §7.2 edge straddle. The sign is calibrated so successful pushing is positive.
+
+With [task], the policy trained on <env id> is replayed on that task instead (e.g. a multi-task
+policy on held-out T2), built as scripts/eval_policy.py builds it: same reward variant, and for a
+label-trained policy the label form of the observation (all-zero one-hot on an unseen task).
 """
 import glob
 import sys
@@ -29,10 +33,18 @@ import wam  # noqa: F401,E402
 LIMITS = {1: (-2.059, 2.0944), 3: (-0.19198, 3.927), 5: (-1.69297, 3.14159)}
 
 
-def replay(env_id, seed, steps, out):
+def replay(env_id, seed, steps, out, task=None):
     from train_ppo import Agent
+    from wam.tasks import TaskEnv
 
-    raw = gym.make(env_id)
+    if task is None:
+        raw = gym.make(env_id)
+    else:
+        kwargs = gym.spec(env_id).kwargs
+        labels = kwargs["tasks"] if kwargs.get("task_labels") else None
+        raw = gym.wrappers.TimeLimit(
+            TaskEnv(task=task, outcome_reward="Outcome" in env_id, labels=labels), 250
+        )
     u = raw.unwrapped
 
     class Spaces:
@@ -162,4 +174,5 @@ if __name__ == "__main__":
     if sys.argv[1] == "--summary":
         summary(sys.argv[2:])
     else:
-        replay(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
+        replay(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4],
+               sys.argv[5] if len(sys.argv) > 5 else None)

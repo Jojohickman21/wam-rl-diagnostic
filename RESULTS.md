@@ -1056,7 +1056,7 @@ tips the plate before 10% progress, with no forearm contact at all.
 
 **Finding.**
 
-1. **The edge straddle of §7.2 does not recur on the new tasks.** Stuck pushing is 2 to 15
+1. **The edge straddle of §7.2 does not recur on the new tasks** (corrected in §10.5 for T1: with 8 seeds a rare straddle-like stall appears there). Stuck pushing is 2 to 15
    episodes per group on T1–T4xy, under 11% of timeouts. Too few to characterise; anecdotally, the
    handful on T1 push perpendicular to the slide (zero force along the axis, as on the panel's face
    rather than the bar), and the 5 on T2 dense have cancelling contacts (net/total 0.10).
@@ -1080,3 +1080,127 @@ fits it being a property of the door's top edge, not of the reward. What does re
 losing contact (off-object timeouts) and joints running into stops. Neither the dense reward nor
 the outcome reward prevents either one. A contact-maintenance or joint-margin signal is the next
 thing to test, and per §7.2–7.3 an observation alone did not fix the stops.
+
+### 10.4 Training curves with 8 seeds (2026-11-23)
+
+**Single-task, dense gated, 8 seeds** (`python scripts/analyze_runs.py WamTask<ID>-v0`; tables in
+`runs/diagnostics/tables/`). Success over each seed's last 500 training episodes:
+
+| Task | Success, seeds 1–8 | Mean | Range | Steps to 90% |
+|---|---|---|---|---|
+| T1 sliding door | 0.932 / 0.976 / 0.972 / 0.940 / 0.984 / 0.912 / 0.956 / 0.970 | 0.955 | 0.912–0.984 | 35k–55k on every seed |
+| T2 drawer push | 0.922 / 0.906 / 0.840 / 0.772 / 0.910 / 0.718 / 0.644 / 0.824 | 0.817 | 0.644–0.922 | 176k–1,031k; never on seeds 4, 6, 7 |
+| T4x box, x rail | 0.894 / 0.914 / 0.864 / 0.918 / 0.874 / 0.936 / 0.952 / 0.930 | 0.910 | 0.864–0.952 | 47k–111k on every seed |
+
+T1 and T4x hold their 3-seed picture. T2 does not: its mean drops from 0.889 (3 seeds, §9.1) to
+0.817, and three of the five new seeds never reach 90%. That weakens §9.1's nearest-to-separating
+case further. Dense gated on T2 now spans 0.644 to 0.922 against outcome's 0.676 to 0.886 (still 3
+seeds), so the two rewards are even less distinguishable there than §9.1 reported.
+
+**Multi-task policies, per training task** (`python scripts/analyze_multitask.py WamMultiTask-v0
+WamMultiTaskLabel-v0`). Each seed's episodes are split by the logged `task/index`. "Final" is the
+task's last 500 episodes; "steps to 90%" is the first total training step at which that task's
+200-episode rolling success exceeded 0.9:
+
+**Descriptor policy** (`WamMultiTask-v0`)
+| Seed | T0 final / steps to 90% | T1 final / steps to 90% | T4x final / steps to 90% | T4xneg final / steps to 90% | Pooled final |
+|---|---|---|---|---|---|
+| 1 | 0.518 / 545k | 0.962 / 105k | 0.812 / 418k | 0.798 / 361k | 0.771 |
+| 2 | 0.854 / 452k | 0.928 / 119k | 0.874 / 514k | 0.796 / 776k | 0.865 |
+| 3 | 0.708 / never | 0.796 / 171k | 0.478 / never | 0.706 / 882k | 0.670 |
+| 4 | 0.424 / 161k | 0.766 / 132k | 0.480 / 151k | 0.828 / 279k | 0.625 |
+| 5 | 0.738 / never | 0.928 / 115k | 0.748 / 208k | 0.558 / never | 0.740 |
+| 6 | 0.750 / never | 0.944 / 176k | 0.744 / never | 0.640 / never | 0.765 |
+| 7 | 0.782 / never | 0.888 / 159k | 0.920 / 565k | 0.794 / 414k | 0.846 |
+| 8 | 0.656 / 1110k | 0.808 / 254k | 0.576 / never | 0.458 / 513k | 0.622 |
+| mean | 0.679 (range 0.424–0.854) | 0.878 (range 0.766–0.962) | 0.704 (range 0.478–0.920) | 0.697 (range 0.458–0.828) | |
+
+**Label policy** (`WamMultiTaskLabel-v0`)
+| Seed | T0 final / steps to 90% | T1 final / steps to 90% | T4x final / steps to 90% | T4xneg final / steps to 90% | Pooled final |
+|---|---|---|---|---|---|
+| 1 | 0.318 / never | 0.910 / 100k | 0.674 / 134k | 0.352 / 202k | 0.556 |
+| 2 | 0.662 / 399k | 0.938 / 120k | 0.700 / 200k | 0.882 / 247k | 0.796 |
+| 3 | 0.822 / 365k | 0.922 / 188k | 0.492 / never | 0.748 / never | 0.744 |
+| 4 | 0.784 / 413k | 0.938 / 147k | 0.816 / 182k | 0.784 / never | 0.830 |
+| 5 | 0.736 / 180k | 0.934 / 157k | 0.678 / never | 0.788 / 195k | 0.787 |
+| 6 | 0.660 / never | 0.906 / 136k | 0.930 / 197k | 0.556 / never | 0.767 |
+| 7 | 0.666 / 256k | 0.940 / 133k | 0.826 / 164k | 0.852 / 976k | 0.827 |
+| 8 | 0.846 / 146k | 0.934 / 108k | 0.906 / 122k | 0.546 / 165k | 0.806 |
+| mean | 0.687 (range 0.318–0.846) | 0.928 (range 0.906–0.940) | 0.753 (range 0.492–0.930) | 0.689 (range 0.352–0.882) | |
+
+**Against the single-task policies** (same training-log measure; T0 and T4xneg have only 3
+single-task seeds). The multi-task ranges overlap the single-task ones on T0, T1 and T4x for both
+policies. On T4xneg the descriptor policy's range (0.458–0.828) sits entirely below the single-task
+range (0.832–0.916), by 0.4 points at the edge. The label policy's does not (0.352–0.882). On T1 the
+label policy is tight (0.906–0.940), the descriptor policy wide (0.766–0.962); no difference between
+them is separable on any task, as §10.2 found from the evaluations.
+
+**Tasks interfere.** 23 of the descriptor policy's 32 seed-task pairs, and 25 of the label
+policy's, reached 90% at some point during training. In each policy, **7 of those ended below 0.75**:
+for example, descriptor seed 4 reached 90% on T0 at 161k steps and finished at 0.424, and label seed
+1 reached 90% on T4xneg at 202k and finished at 0.352. The single-task runs show nothing like this:
+every T1 and T4x seed that reached 90% ended at 0.86 or above. The rate is the same for both
+observation forms, so the interference comes from training four tasks in one policy, not from
+how the task is described. It is a plausible reason the multi-task policies trail the single-task
+ones, and it was not addressed: no per-task loss balancing, no curriculum.
+
+### 10.5 Failure profiles: 8 seeds of T1, T2, T4x, and every policy on held-out T2 (2026-11-23)
+
+`scripts/diagnose_timeouts/run_followup_profiles.sh`: exact replays, 60k steps per single-task seed
+on its own task, and 30k steps per seed for every policy on T2. `task_profile.py` can now replay a
+policy on a task it did not train on (`[task]` argument), built as the evaluator builds it.
+Counts are in `runs/diagnostics/profiles/counts_8seed.txt` and `runs/diagnostics/profiles_t2/`.
+
+**Single-task, 8 seeds, own task** (dense gated; categories as in §10.3):
+
+| Task | Episodes | Spills (early) | Timeouts | Stuck | Off the object | Joint at a stop |
+|---|---|---|---|---|---|---|
+| T1 | 8,097 | 324 (241) | 67 | 40 | 15 | 0 |
+| T2 | 5,668 | 391 (89) | 509 | 27 | 417 | 183 |
+| T4x | 7,835 | 472 (196) | 216 | 11 | 196 | 91 |
+
+T2 and T4x keep the §10.3 picture: timeouts end with the forearm off the object, and in 36% (T2)
+and 42% (T4x) of them a joint is at a stop. **Correction to §10.3 for T1:** with 8 seeds, 40 of
+T1's 67 timeouts are stuck pushes, against 4 of 15 at 3 seeds. They cluster in seeds 4, 7 and 8 (33
+of the 40) and take two forms. Some steps carry no force along the slide (the forearm presses
+across the slide, as on the panel's face rather than the bar). Others carry large forces that
+cancel (net/total 0.00 on 69% of stuck steps), which is straddle-like. So a straddle-like stall
+does occur on T1, but rarely: 40 of 8,097 episodes (0.5%). T1's main failure remains early spills,
+241 of its 324.
+
+**Every policy on held-out T2, 8 seeds each:**
+
+| Policy | Episodes | Success | Spills (early, before 10% progress and any contact) | Timeouts | Off the object | Joint at a stop |
+|---|---|---|---|---|---|---|
+| Descriptor | 1,615 | 0.356 | 444 (254) | 596 | 536 | **457** |
+| Label | 1,582 | 0.443 | 286 (98) | 596 | 511 | 102 |
+| T1 only | 1,757 | 0.282 | 715 (420) | 548 | 474 | 47 |
+| T4x only | 1,944 | 0.308 | 843 (515) | 502 | 455 | 275 |
+| T2 only (trained) | 2,837 | 0.841 | 200 (42) | 253 | 207 | 85 |
+
+Replay success matches the §10.2 evaluations within about 2 points for four policies, and is 5 points higher for T4x-only (0.308 against 0.258); the replays draw fresh start seeds and are about 200 episodes per seed.
+
+**Finding.**
+1. **Zero-shot spills mostly happen before the policy touches the drawer:** 57 to 61% of spills for
+   the descriptor, T1-only and T4x-only policies, against 34% for the label policy and 21% for the
+   T2-trained one. Untrained policies make an opening move that suits their training tasks and
+   tips the plate on this one (inference, from timing and the absence of contact).
+2. **The zero-shot policies' timeouts look alike.** 86 to 91% end with the forearm off the drawer
+   (82% for the T2-trained policy), and stuck pushing is 3 to 6% for every policy.
+3. **The descriptor policy drives a joint into its stop on T2.** This is the clearest difference
+   in the whole comparison. 457 of its 596 timeouts end with a joint within 0.05 rad of a hard
+   limit, 55% or more on 7 of 8 seeds (per seed: 96, 65, 88, 95, 96, 10, 55, 100%). The label policy
+   does this in 102 of 596, at most 52% on any seed. On the per-seed shares, descriptor against
+   label gives rank-sum p = 0.002, and against T1-only p = 0.001. One low descriptor seed keeps the
+   ranges overlapping, so the bar is not met. T4x-only also hits stops on T2 (275 of 502;
+   p = 0.23 against the descriptor). Which joint, and why, was not recorded.
+
+**Reading (inference, not tested).** The two conditioned policies trained on the same four tasks
+and differ only in how the task is described, yet on the unseen drawer the descriptor policy
+consistently commits to a motion that runs a joint into its stop, and the label policy, which sees
+no task identity, does not. T4x-only does it too. That fits the descriptor policy mapping T2's
+joint description onto something like its box-pushing behaviour, a motion the drawer's geometry
+cannot accommodate, and the label policy falling back to a more average, less committed motion. It
+is the first evidence that the descriptor changes *how* a policy acts on an unseen task, even
+though it does not change *how often* it succeeds (§10.2). Testing it needs the joint identity at the
+stop, and the descriptor policy evaluated on T2 with T4x's joint description swapped in.
