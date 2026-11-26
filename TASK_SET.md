@@ -254,3 +254,24 @@ follow-up.
 1. **Validity:** G2 and G3 reach at least 0.80 mean on T4x and T4xneg. If not, the family didn't train, and T2 numbers are not interpretable.
 2. **Main claim:** G2 or G3 reaches at least **0.70 mean on held-out T2**, with a seed range that does not overlap the §10 label policy's (0.22–0.56). The T2-trained ceiling is 0.838.
 3. **Between variants:** G2 vs G1 and G3 vs G2 on T2 count only if seed ranges do not overlap. An exact rank-sum p is reported as a second look.
+
+### Josiah's predictions for G1–G3 (logged 2026-11-25, before any run started)
+
+In his words:
+- **G2 (contact target):** "will perform well and increase the success rate of zero-shot to new tasks."
+- **G3 (contact target + FK):** "won't perform much differently from G2, as I don't think the positional
+  information will provide that much additional information beyond the vector for the policy that
+  would actually increase the performance."
+- **G1 (joint descriptor):** "will produce similar performance as before."
+
+Testable versions (translation, to be scored against RESULTS.md when the batch finishes):
+
+| # | Prediction | Scored true if |
+|---|---|---|
+| P1 | G2 improves zero-shot transfer | G2's mean on held-out T2 exceeds G1's on the same batch **and** exceeds §10's best zero-shot result (label policy, 0.422) |
+| P2 | G3 ≈ G2 | on T2, G3 and G2 seed ranges overlap and the rank-sum p ≥ 0.05 (no separable difference) |
+| P3 | G1 ≈ before | G1's mean on T2 is within ±0.10 of §10's descriptor policy (0.349) |
+
+Note on P3: G1 is not a pure rerun. It keeps the joint descriptor but now trains on the randomised
+family instead of four fixed tasks. So P3 doubles as a test of whether variety alone helps: if G1
+improves well beyond 0.349, more varied training mattered even without the contact representation.
