@@ -270,7 +270,9 @@ Testable versions (translation, to be scored against RESULTS.md when the batch f
 |---|---|---|
 | P1 | G2 improves zero-shot transfer | G2's mean on held-out T2 exceeds G1's on the same batch **and** exceeds §10's best zero-shot result (label policy, 0.422) |
 | P2 | G3 ≈ G2 | on T2, G3 and G2 seed ranges overlap and the rank-sum p ≥ 0.05 (no separable difference) |
-| P3 | G1 ≈ before | G1's mean on T2 is within ±0.10 of §10's descriptor policy (0.349) |
+| P3 | G1 ≈ before | G1's mean on T2 is within ±0.10 of §10's descriptor policy (0.349). *Superseded by P3′ below.* |
+| P1′ | (numeric, added later the same evening, still before any run) G2 clears 0.80 | G2's mean on held-out T2 is above 0.80 |
+| P3′ | (numeric, replaces P3) variety alone helps G1 at most modestly: "I could see improvements due to task variety but not great performance" | G1's mean on held-out T2 is below 0.60 |
 
 Note on P3: G1 is not a pure rerun. It keeps the joint descriptor but now trains on the randomised
 family instead of four fixed tasks. So P3 doubles as a test of whether variety alone helps: if G1
