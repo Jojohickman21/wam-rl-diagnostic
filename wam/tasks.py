@@ -33,6 +33,8 @@ from wam.close_cabinet import (
 ASSETS = Path(__file__).parents[1] / "assets"
 DOOR_RANGE = 1.2  # rad; W_PROGRESS is per rad of door, so a task's progress weight is W_PROGRESS · 1.2 / range
 SLOTS = 2
+CONTACT_SIZE = 8  # target surface point minus forearm point (3), push direction (3), d/range, ḋ/range
+FK_SIZE = 9  # elbow (link 4 origin), forearm (link5_c2 centre), wrist (link 6 origin), world frame
 MAX_START_TRIES = 1000  # arm draws per fixture pose before the pose is redrawn
 SLOT_SIZE = 13
 LABEL_SLOT = (0, 9, 10, 11, 12)  # valid, s, ṡ, s*, range: the slot without the joint's geometry
@@ -57,6 +59,18 @@ TASKS = {
     "T4xneg": dict(scene="task_box_x.xml", fixture="fixture", mover="mover", joints=("slide_x",),
                    start=(0.0, 0.0), goal=("axis", 0.20, 0.30, -1.0), range=0.25, tol=0.02, outward=None,
                    home_yaw=0.9),
+    # Procedural family (TASK_SET.md, 11/25 follow-up): the T4 box on one rail, redrawn every episode
+    # in push direction (world azimuth, from `arcs`; each arc has its own home_yaw so the arm starts
+    # on the push side), position (cabinet_spread) and box size. The goal is always ahead along the
+    # rail. `held_out` removes a band of push azimuths from training.
+    "F": dict(scene="task_box_x.xml", fixture="fixture", mover="mover", joints=("slide_x",),
+              start=(0.0, 0.0), goal=("axis", 0.20, 0.30, 1.0), range=0.25, tol=0.02, outward=None,
+              # Arcs are where a scripted forearm push solves >= 60% of starts (scripts/family_feasibility.py,
+              # 2026-11-25: -10..110 deg 80-100%, 210..250 deg 60-65%; -30..-10 and 250..270 fail). The held-out
+              # band covers T2's push directions (30 deg ± the 20 deg cabinet turn), so T2 is unseen in both
+              # object and direction.
+              family=dict(arcs=((np.radians(-10), np.radians(110), 0.0), (np.radians(210), np.radians(250), 0.9)),
+                          held_out=(np.radians(10), np.radians(50)), half_xy=(0.04, 0.07), half_z=(0.10, 0.14))),
     "T4y": dict(scene="task_box_y.xml", fixture="fixture", mover="mover", joints=("slide_y",),
                 start=(0.0, 0.0), goal=("axis", 0.20, 0.30, -1.0), range=0.25, tol=0.02, outward=None),
     "T4xy": dict(scene="task_box_xy.xml", fixture="fixture", mover="mover", joints=("slide_x", "slide_y"),
@@ -69,8 +83,11 @@ class TaskEnv(CloseCabinetEnv):
 
     def __init__(self, task="T0", render_mode=None, gated=True, start_spread=0.5,
                  cabinet_spread=(0.1, np.radians(20)), tray_object=True, observe_object=False,
-                 energy_penalty=True, wrist_leveler=True, outcome_reward=False, labels=None):
-        spec_ = TASKS[task]
+                 energy_penalty=True, wrist_leveler=True, outcome_reward=False, labels=None,
+                 conditioning="descriptor", family=None):
+        spec_ = dict(TASKS[task])
+        if family is not None:  # override parts of the family spec (e.g. a held-out band)
+            spec_["family"] = {**spec_["family"], **family}
         self.task = task
         self.spec_ = spec_
         spec = mujoco.MjSpec.from_file(str(ASSETS / spec_["scene"]))
@@ -142,11 +159,26 @@ class TaskEnv(CloseCabinetEnv):
         # axis and anchor leave the observation and a one-hot over `labels` takes their place. A task
         # not in `labels` gets all zeros, so a held-out task carries no task information at all.
         self.labels = tuple(labels) if labels is not None else None
-        if self.labels is None:
-            condition = SLOTS * SLOT_SIZE
+        # How the task is described (TASK_SET.md): "descriptor" (joint type, axis, anchor, s, ṡ, goal,
+        # range) or the label form above; "contact" replaces the fixture pose and descriptor with the
+        # contact target (CONTACT_SIZE numbers, see contact_features); "contact_fk" adds Cartesian
+        # positions of the elbow, forearm and wrist from forward kinematics (FK_SIZE numbers).
+        self.conditioning = "label" if self.labels is not None else conditioning
+        if self.conditioning == "descriptor":
+            size = 28 + 5 + SLOTS * SLOT_SIZE
+        elif self.conditioning == "label":
+            size = 28 + 5 + SLOTS * len(LABEL_SLOT) + len(self.labels)
+        elif self.conditioning == "contact":
+            size = 28 + 1 + CONTACT_SIZE
+        elif self.conditioning == "contact_fk":
+            size = 28 + 1 + CONTACT_SIZE + FK_SIZE
         else:
-            condition = SLOTS * len(LABEL_SLOT) + len(self.labels)
-        size = 28 + 5 + condition + 6 * self.observe_object
+            raise ValueError(f"unknown conditioning {conditioning!r}")
+        size += 6 * self.observe_object
+        self.forearm_geom = self.model.geom("link5_c2").id
+        self.fk_bodies = [self.model.body(name).id for name in ("link4", "link6")]
+        if "family" in spec_:
+            self.box_geom = self.model.geom("box").id
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (size,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
@@ -174,12 +206,16 @@ class TaskEnv(CloseCabinetEnv):
         self.model.body_pos[self.fixture_body] = self.cabinet_home + np.append(
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
+        home_yaw = self.spec_.get("home_yaw", 0.0)
+        if "family" in self.spec_:  # drawn only for the family, so every fixed task's sequence is unchanged
+            azimuth, home_yaw = self._draw_family()
+            self.cabinet_yaw = azimuth - self.fixture_yaw0
         mujoco.mju_axisAngle2Quat(self.model.body_quat[self.fixture_body], [0.0, 0.0, 1.0],
                                   self.fixture_yaw0 + self.cabinet_yaw)
         self._draw_goal()
         lo, hi = self.spec_["start"]
         home = self.home[:7].copy()
-        home[0] += self.spec_.get("home_yaw", 0.0)
+        home[0] += home_yaw
         for _ in range(MAX_START_TRIES):
             for adr in self.qpos_adr:
                 self.data.qpos[adr] = self.np_random.uniform(lo, hi) if hi > lo else lo
@@ -194,6 +230,22 @@ class TaskEnv(CloseCabinetEnv):
                 return (self.model.body_pos[self.fixture_body].copy(), self.cabinet_yaw, self.tilt_max,
                         self.data.qpos.copy())
         return None
+
+    def _draw_family(self):
+        """Push azimuth (outside any held-out band), the arc's home_yaw, and a new box size."""
+        fam = self.spec_["family"]
+        while True:
+            lo, hi, home_yaw = fam["arcs"][self.np_random.integers(len(fam["arcs"]))]
+            azimuth = self.np_random.uniform(lo, hi)
+            band = fam.get("held_out")
+            wrapped = (azimuth + np.pi) % (2 * np.pi) - np.pi
+            if band is None or not band[0] <= wrapped <= band[1]:
+                break
+        half = np.array([*self.np_random.uniform(*fam["half_xy"], 2), self.np_random.uniform(*fam["half_z"])])
+        self.model.geom_size[self.box_geom] = half
+        self.model.geom_rbound[self.box_geom] = np.linalg.norm(half)
+        self.model.geom_aabb[self.box_geom] = np.concatenate([np.zeros(3), half])
+        return azimuth, home_yaw
 
     def _draw_goal(self):
         """Fixed goals draw nothing, so T0 keeps A20's random sequence."""
@@ -271,6 +323,37 @@ class TaskEnv(CloseCabinetEnv):
                  self.goal[i], self.spec_["range"]],
             ])
         return slots.ravel()
+
+    def push_direction(self):
+        """World direction the mover moves when its joints move toward the goal (slide joints)."""
+        toward = self.goal - self.data.qpos[self.qpos_adr]
+        world = sum(toward[i] * self.data.xaxis[j] for i, j in enumerate(self.joint_ids))
+        norm = np.linalg.norm(world)
+        return world / norm if norm > 1e-9 else np.zeros(3)
+
+    def contact_target(self):
+        """The surface point to push: where a ray along the push direction, started 0.4 m behind the
+        mover's origin, first meets one of the mover's geoms. Same rule for every task."""
+        direction = self.push_direction()
+        start = self.data.xpos[self.mover_body] - 0.4 * direction
+        best = np.inf
+        for g in self.mover_geoms:
+            dist = mujoco.mju_rayGeom(self.data.geom_xpos[g], self.data.geom_xmat[g], self.model.geom_size[g],
+                                      start, direction, self.model.geom_type[g])
+            if 0 <= dist < best:
+                best = dist
+        return start + best * direction if np.isfinite(best) else self.data.xpos[self.mover_body].copy(), direction
+
+    def contact_features(self):
+        target, direction = self.contact_target()
+        forearm = self.data.geom_xpos[self.forearm_geom]
+        speed = -float(np.dot(self.data.qvel[self.qvel_adr], self.goal - self.data.qpos[self.qpos_adr])) / max(self._distance(), 1e-9)
+        return np.concatenate([target - forearm, direction,
+                               [self._distance() / self.spec_["range"], speed / self.spec_["range"]]])
+
+    def fk_features(self):
+        return np.concatenate([self.data.xpos[self.fk_bodies[0]], self.data.geom_xpos[self.forearm_geom],
+                               self.data.xpos[self.fk_bodies[1]]])
 
     def condition(self):
         """What tells the policy which task this is: the descriptor, or the label form of it."""
@@ -357,12 +440,14 @@ class TaskEnv(CloseCabinetEnv):
     def _obs(self):
         q, qvel = self.data.qpos, self.data.qvel
         yaw = self.fixture_yaw0 + self.cabinet_yaw
-        obs = [
-            q[:7], qvel[:7], self.q_target - q[:7], self.last_action,
-            self.model.body_pos[self.fixture_body][:2], [np.cos(yaw), np.sin(yaw)],
-            [self.tilt_max if self.observe_slide_angle else TILT_MAX],
-            self.condition(),
-        ]
+        arm = [q[:7], qvel[:7], self.q_target - q[:7], self.last_action]
+        tilt = [self.tilt_max if self.observe_slide_angle else TILT_MAX]
+        if self.conditioning in ("descriptor", "label"):
+            obs = arm + [self.model.body_pos[self.fixture_body][:2], [np.cos(yaw), np.sin(yaw)], tilt, self.condition()]
+        else:
+            obs = arm + [tilt, self.contact_features()]
+            if self.conditioning == "contact_fk":
+                obs.append(self.fk_features())
         if self.observe_object:
             to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
             offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]

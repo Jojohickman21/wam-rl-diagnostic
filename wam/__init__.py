@@ -218,3 +218,8 @@ gym.register(id="WamMultiTaskOutcome-v0", entry_point="wam.tasks:MultiTaskEnv", 
 # replaced by a one-hot task label. On a held-out task the label is all zeros.
 gym.register(id="WamMultiTaskLabel-v0", entry_point="wam.tasks:MultiTaskEnv", max_episode_steps=250,
              kwargs={"tasks": ("T0", "T1", "T4x", "T4xneg"), "task_labels": True})
+# Generalisation batch (TASK_SET.md, 11/25): one family of randomised slide objects, three ways of
+# describing the task. G1 joint descriptor, G2 contact target, G3 contact target + forward kinematics.
+for _name, _cond in (("Desc", "descriptor"), ("Contact", "contact"), ("ContactFK", "contact_fk")):
+    gym.register(id=f"WamFamily{_name}-v0", entry_point="wam.tasks:TaskEnv", max_episode_steps=250,
+                 kwargs={"task": "F", "conditioning": _cond})

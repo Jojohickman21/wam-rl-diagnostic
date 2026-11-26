@@ -567,3 +567,58 @@ def test_label_baseline_swaps_geometry_for_a_one_hot_and_blanks_unseen_tasks():
     assert list(b[-4:]) == [0.0, 1.0, 0.0, 0.0]
     held, _ = TaskEnv(task="T2", labels=labels).reset(seed=0)
     assert not held[-4:].any()
+
+
+@pytest.mark.parametrize("env_id,size", [
+    ("WamFamilyDesc-v0", 59), ("WamFamilyContact-v0", 37), ("WamFamilyContactFK-v0", 46),
+])
+def test_family_variants_have_their_observation_sizes(env_id, size):
+    env = gym.make(env_id)
+    obs, _ = env.reset(seed=0)
+    assert obs.shape == env.observation_space.shape == (size,)
+    assert env.action_space.shape == (4,)
+    env.close()
+
+
+def test_family_never_trains_on_the_held_out_band_and_varies_the_box():
+    from wam.tasks import TaskEnv
+
+    env = TaskEnv(task="F", conditioning="contact")
+    azimuths, sizes = [], []
+    for seed in range(60):
+        env.reset(seed=seed)
+        d = env.push_direction()
+        azimuths.append(np.degrees(np.arctan2(d[1], d[0])))
+        sizes.append(env.model.geom_size[env.box_geom][0])
+        assert env.data.ncon == 0 and env._outside_door()
+    azimuths = np.array(azimuths)
+    assert not np.any((azimuths >= 10) & (azimuths <= 50))
+    assert np.any(azimuths < 10) and np.any(azimuths > 50) and np.any(azimuths < -90)  # both arcs drawn
+    assert np.ptp(sizes) > 0.01
+
+
+@pytest.mark.parametrize("task,geom", [("F", "box"), ("T1", "bar"), ("T2", "front"), ("T4x", "box"), ("T4xneg", "box")])
+def test_contact_target_is_on_the_push_side_of_the_part_to_push(task, geom):
+    from wam.tasks import TaskEnv
+
+    env = TaskEnv(task=task, conditioning="contact")
+    env.reset(seed=1)
+    target, direction = env.contact_target()
+    g = env.model.geom(geom).id
+    assert np.dot(target - env.data.geom_xpos[g], direction) < 0  # in front of the part, on the push side
+    nearest = min(env.mover_geoms, key=lambda k: np.linalg.norm(env.data.geom_xpos[k] - target))
+    assert nearest == g
+
+
+def test_contact_observation_carries_target_offset_direction_and_fk_points():
+    from wam.tasks import TaskEnv
+
+    env = TaskEnv(task="T4x", conditioning="contact_fk")
+    obs, _ = env.reset(seed=3)
+    target, direction = env.contact_target()
+    forearm = env.data.geom_xpos[env.forearm_geom]
+    assert np.allclose(obs[29:32], target - forearm, atol=1e-5)
+    assert np.allclose(obs[32:35], direction, atol=1e-6)
+    assert obs[35] == pytest.approx(env._distance() / 0.25, rel=1e-5)
+    assert np.allclose(obs[37:40], env.data.xpos[env.model.body("link4").id], atol=1e-5)
+    assert np.allclose(obs[43:46], env.data.xpos[env.model.body("link6").id], atol=1e-5)

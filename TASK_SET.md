@@ -205,3 +205,52 @@ controls 0.27 and 0.26, every range overlapping, smallest p 0.068). In distribut
 and label policies are indistinguishable on all four tasks. The joint geometry adds nothing
 measurable over a task label in this setup. Next informative test: a held-out task interpolated
 between training tasks.
+
+## Generalisation batch G1–G3 (2026-11-25, after the Erdem meeting)
+
+Why: §10 showed that conditioning on four discrete tasks does not transfer to a held-out task. Likely
+reasons: too little variety, an input that makes the policy do its own kinematics, and interference
+between discrete tasks. Erdem endorsed three changes (notes.md, 11/25): contact targets as
+observations, procedurally randomised articulations, and forward-kinematics features.
+
+**Training family "F"** (`wam/tasks.py`): the T4 box on one slide rail, redrawn every episode.
+- **Push direction:** azimuth drawn from −10°…110°, or 210°…250° with the far-side start.
+- **Held-out band:** 10°…50° is never drawn in training.
+- **Also redrawn:** position (±10 cm), box half-sizes (4–7 cm wide, 10–14 cm tall), goal 0.20–0.30 m ahead.
+
+The arcs are where a scripted forearm push solves at least 60% of starts
+(`scripts/family_feasibility.py`, 20 starts per 20° bin):
+
+| Push direction | Solved forearm-only |
+|---|---|
+| −30° to −10° | 25% (excluded) |
+| −10° to 110° | 80–100% |
+| 210° to 250° (far-side start) | 60–65% |
+| 250° to 270° | 20% (excluded) |
+
+**Variants** (same family, same reward, A20's controller + RL structure; 8 seeds each, 20M steps):
+
+| Label | Env | The policy is told |
+|---|---|---|
+| G1 | `WamFamilyDesc-v0` | joint descriptor (as in §9–10): type, world axis and anchor, s, ṡ, goal, range, plus fixture pose (obs 59) |
+| G2 | `WamFamilyContact-v0` | contact target: (target surface point − forearm point), push direction, distance to goal / range, its rate (obs 37). No fixture pose or joint parameters |
+| G3 | `WamFamilyContactFK-v0` | G2 plus Cartesian positions of the elbow (link 4), forearm (link5_c2 centre) and wrist (link 6), from forward kinematics of the encoders (obs 46) |
+
+The target surface point is where a ray along the push direction first meets the object. It is the
+same rule for every task: the handle bar on T1, the drawer front on T2, the box face on T4. The FK
+positions are *added* to the joint angles, not substituted for them, since the joint angles are
+still needed for control and joint limits. Erdem suggested replacing them; that is a possible
+follow-up.
+
+**Test tasks (zero-shot, `scripts/eval_policy.py`, 200 episodes per seed):**
+
+| Task | Role |
+|---|---|
+| T4x, T4xneg | the family's own box: an in-distribution check |
+| T1 | new object (panel and handle bar), mostly trained directions |
+| **T2** | **new object (drawer and chest) and held-out push directions: the main test** |
+
+**Bar, fixed before running:**
+1. **Validity:** G2 and G3 reach at least 0.80 mean on T4x and T4xneg. If not, the family didn't train, and T2 numbers are not interpretable.
+2. **Main claim:** G2 or G3 reaches at least **0.70 mean on held-out T2**, with a seed range that does not overlap the §10 label policy's (0.22–0.56). The T2-trained ceiling is 0.838.
+3. **Between variants:** G2 vs G1 and G3 vs G2 on T2 count only if seed ranges do not overlap. An exact rank-sum p is reported as a second look.

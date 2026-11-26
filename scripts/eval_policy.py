@@ -29,10 +29,13 @@ yaw_spread = float(sys.argv[5]) if len(sys.argv) > 5 else 20.0
 outcome = "Outcome" in train_env
 # A label-trained policy sees the label form of the observation, with a one-hot over its training
 # tasks (all zeros for a task it never trained on); every other policy sees the full descriptor.
-labels = gym.spec(train_env).kwargs["tasks"] if gym.spec(train_env).kwargs.get("task_labels") else None
+train_kwargs = gym.spec(train_env).kwargs
+labels = train_kwargs["tasks"] if train_kwargs.get("task_labels") else None
+conditioning = train_kwargs.get("conditioning", "descriptor")  # the family policies see contact targets etc.
 
 raw = gym.wrappers.TimeLimit(
-    TaskEnv(task=task, outcome_reward=outcome, cabinet_spread=(0.1, np.radians(yaw_spread)), labels=labels), 250
+    TaskEnv(task=task, outcome_reward=outcome, cabinet_spread=(0.1, np.radians(yaw_spread)), labels=labels,
+            conditioning=conditioning), 250
 )
 path = glob.glob(f"runs/{train_env}__train_ppo__{seed}__*/train_ppo.cleanrl_model")[0]
 stats = np.load(Path(path).with_name("obs_rms.npz"))
