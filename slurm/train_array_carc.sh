@@ -11,7 +11,7 @@
 #SBATCH --partition=main
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=16gb
-#SBATCH --time=03:00:00
+#SBATCH --time=24:00:00
 #SBATCH --requeue
 #SBATCH --output=slurm/%x-%A_%a.out
 source /scratch1/jhickman/miniforge3/etc/profile.d/conda.sh && conda activate /scratch1/jhickman/envs/wam
