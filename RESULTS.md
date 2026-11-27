@@ -1204,3 +1204,65 @@ cannot accommodate, and the label policy falling back to a more average, less co
 is the first evidence that the descriptor changes *how* a policy acts on an unseen task, even
 though it does not change *how often* it succeeds (§10.2). Testing it needs the joint identity at the
 stop, and the descriptor policy evaluated on T2 with T4x's joint description swapped in.
+
+## 11. No-RL baseline: a scripted push given what G2 is told (2026-11-25)
+
+**Question.** With G2's contact target and push direction, does a held-out drawer need RL at all?
+If a scripted controller given the same information matches G2 on T2, G2 is not an RL result.
+
+**Setup** (`scripts/scripted_baseline.py`). Per step: read `contact_target()` (the source of G2's
+contact features); drive the forearm point G2 is measured from (`link5_c2`) by damped least squares
+on joints 1–4 to 5 cm behind the target; once within 1.5 cm or touching the object with the forearm,
+push along the push direction. The wrist leveler holds the plate. One attempt, one forearm point (the
+11/18 feasibility gate took the best of four, so its 80% on T2 was an upper bound). Same env, 250-step
+limit, ±20° yaw and reset seeds as `eval_policy.py`, so seed s sees the policy of seed s's starts.
+The controller is deterministic, so "seeds" here vary only the starts, not a training run.
+
+Two fixes before the full run, both found on 20 smoke-test episodes:
+- Uncapped, the DLS step saturates the action at full rate and throws the cylinder within 5–8 steps.
+  Added a speed cap (max |action|). **Tuned on training tasks only** (seed 1, 60 episodes):
+
+  | cap | F (G training family) | T4x |
+  |---|---|---|
+  | 1.0 | 0.567 | 0.800 |
+  | 0.5 | **0.633** | 0.850 |
+  | 0.3 | 0.600 | **0.883** |
+  | 0.2 | 0.517 | 0.650 |
+  | 0.1 | 0.183 | 0.200 |
+
+  Frozen at **0.5** (best on F, the distribution G1–G3 train on; T4x within 3 points) before any T2 run.
+- The push phase never started: the 4 cm capsule radius stops the point ~3 cm short of a 1.5 cm
+  threshold. Added the forearm-contact trigger (on hardware: external joint torque).
+
+**Result** (8 start sets × 200 episodes, cap 0.5; raw lines in `artifacts/scripted_baseline/`):
+
+| Task | Success, mean (range) | Forearm-only | Spill | Timeout | Reached push phase |
+|---|---|---|---|---|---|
+| **T2 (held out)** | **0.621** (0.585–0.645) | 0.616 | 0.108 | 0.271 | 0.65 |
+| T1 | 0.846 (0.810–0.880) | 0.799 | 0.054 | 0.100 | 0.84 |
+| T4x | 0.848 (0.830–0.875) | 0.837 | 0.067 | 0.086 | 0.90 |
+| T4xneg | 0.728 (0.700–0.800) | 0.333 | 0.070 | 0.202 | 0.54 |
+| T2, cap 0.3 (sensitivity, not the frozen choice) | 0.662 (0.610–0.695) | 0.651 | 0.113 | 0.226 | 0.55 |
+
+**Finding.**
+1. With no training, the script gets **0.62 on T2**, above every zero-shot policy so far (§10: label
+   0.422, descriptor 0.349) and below the T2-trained RL policy (0.838). So in-distribution RL beats this
+   script on T2 by ~22 points, and no cross-task RL policy has yet matched it.
+2. Its main loss is timeouts (27%): in ~35% of episodes the forearm never reaches the pre-contact point.
+   The straight-line approach has no collision or posture reasoning, so this is a lower bound on what a
+   model-based controller with the same information gets, not a ceiling.
+3. On T4xneg it mostly closes with the hand (forearm-only 0.33 of 0.73), as the gate found on 11/18.
+
+**What this sets for G1–G3** (added before any G result is in): G2's T2 number is read against 0.62.
+G2 "beats scripted control" if its mean is ≥ 0.77 (15 points above) and its seed range does not overlap
+0.585–0.645. A G2 between 0.62 and 0.77 is better than a naive script but not by enough to carry an
+RL claim, since a better approach planner would close part of that gap.
+
+**Threshold replaced 2026-11-27 (Josiah's decision, made after the G results; it does not change any G
+verdict, which fails both versions).** A better approach planner did close part of the gap. The staged
+script (`scripted_baseline.py ... staged`: 0.15 m standoff in front of the face, in along the normal,
+arm point sliding over the four forearm points, nothing tuned on T2) scores **0.755 (0.705–0.790)** on
+the same 8 × 200 starts (log.md, 2026-11-27). The same rule applied to it: a policy "beats scripted
+control" on T2 if its mean is **≥ 0.905** (15 points above 0.755) **and** its seed range does not overlap
+**0.705–0.790**. That is above the T2-*trained* RL ceiling (0.838), so as configured no policy in this
+repo, held-out or trained on T2, would clear it. The 0.77 bar above is superseded.
