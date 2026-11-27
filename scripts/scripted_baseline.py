@@ -30,7 +30,12 @@ moves as the door closes (recomputed every step, so the push turns with the door
 `slew` > 0 limits how much the action may change per control step (every joint, from 0 at episode start). Without
 it the first action jumps from rest to the cap and throws a settled cylinder (2.8% of staged T2 episodes on env v2).
 
-    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy] [slew]
+With [trace.npy], every control step is recorded per episode (stage_audit.py reads it): the controller's stage
+(standoff reached, pushing), its distance to the current goal, arm contact force on the mover by group and on anything
+else, the task's normalised distance to its goal, the smallest joint-limit margin (joints 2, 4, 6), and the largest
+target lead |q_target - q| over joints 1-4.
+
+    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy] [slew] [trace.npy]
 """
 import sys
 
@@ -73,6 +78,9 @@ def target_and_direction():
     moving = np.cross(u.data.xaxis[joint], point_world - u.data.xanchor[joint]) * np.sign(u.goal[0] - u.data.qpos[u.qpos_adr[0]])
     return point_world, moving / max(np.linalg.norm(moving), 1e-9)
 
+trace_path = sys.argv[8] if len(sys.argv) > 8 else None
+LIMITED = [1, 3, 5]  # joints 2, 4, 6: the only ones with stops inside +-2 pi
+traces, steps = [], []
 rows = []
 env.reset(seed=50_000 + seed)
 pushing, standoff_done = False, mode == "direct"
@@ -97,7 +105,16 @@ while len(rows) < episodes:
         standoff_done = error < AT_STANDOFF
     else:
         pushing |= error < tf.REACHED or forearm > 0
+    if trace_path:
+        q = u.data.qpos[:7]
+        margin = min(min(q[j] - u.ctrl_range[j, 0], u.ctrl_range[j, 1] - q[j]) for j in LIMITED)
+        steps.append((standoff_done, pushing, error, info["force/scene"], info["force/door_upper"], info["force/door_link4"],
+                      info["force/door_link5"], info["force/door_link6"], info["force/door_ee"], info["task/distance_norm"],
+                      margin, np.abs(u.q_target[:4] - q[:4]).max()))
     if terminated or truncated:
+        if trace_path:
+            traces.append(np.array(steps, np.float32))
+            steps = []
         rows.append((info["task/success"], info["task/valid_fraction"], info["task/spill"],
                      float(truncated and not terminated), info["task/distance_norm"], float(pushing), float(standoff_done)))
         env.reset()
@@ -109,6 +126,8 @@ while len(rows) < episodes:
 v = np.array(rows)
 if len(sys.argv) > 6:
     np.save(sys.argv[6], v)
+if trace_path:
+    np.save(trace_path, np.array(traces, dtype=object), allow_pickle=True)
 won = v[:, 0] > 0
 print(f"scripted {mode} (cap {cap}{f', slew {slew}' if slew else ''}) seed {seed} on {task} ({episodes} episodes): "
       f"success {won.mean():.3f} | forearm-only {np.mean(won & (v[:, 1] > 0.9)):.3f} "
