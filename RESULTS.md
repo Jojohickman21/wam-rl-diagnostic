@@ -1266,3 +1266,106 @@ the same 8 × 200 starts (log.md, 2026-11-27). The same rule applied to it: a po
 control" on T2 if its mean is **≥ 0.905** (15 points above 0.755) **and** its seed range does not overlap
 **0.705–0.790**. That is above the T2-*trained* RL ceiling (0.838), so as configured no policy in this
 repo, held-out or trained on T2, would clear it. The 0.77 bar above is superseded.
+
+## 12. Env v2 and the frozen scripted baseline, staged2 (2026-11-27)
+
+### 12.1 Env v2: two tray-contact artifacts removed (commit 3d97fc4)
+A 1 kHz spill audit of the staged script on T2 (`scripts/diagnose_timeouts/spill_audit.py`) found that
+64% of its spills were simulator artifacts:
+- **Contact "pops", 34%.** MuJoCo's native CCD sometimes reported a fixed 48 mm plate–cylinder
+  penetration for one substep, and the solver ejected the cylinder.
+- **Unsettled spawn, 30%.** The cylinder was placed 1 mm above the plate and the arm moved before it
+  landed.
+
+v2 sets `ccd_tolerance` 1e-9 on the tray contact: 0 pops in 800 episodes, against 35, at the same speed.
+It also holds the arm still for 250 ms at reset so the cylinder lands and the arm's gravity sag decays.
+64- and 32-sided convex prisms also removed the pops, but made 5 of 10 seeds creep at 95% of the slide
+angle, against 0–1 of 10 for primitive cylinders, so v2 keeps primitives. Starts are drawn before the
+settle, so the start sequence is unchanged.
+
+On v2, staged-T2 spill fell from 12.0% to 7.4%, and success moved only +0.6 to +2 points per task:
+episodes that used to spill now time out. G3 on v2 T2 averages 0.563 (v1: 0.561), so its failures
+are its own. Its checkpoints were trained on v1, so pop damage during training is not undone.
+
+Two follow-up checks found no reason for a v3 (log.md):
+- A slew-rate ramp on the scripted action is a weak negative result: −2 to +4 points.
+- A plate-impulse spike check shows the cylinder chatters on the plate under any arm motion. That
+  happens at nearly the same rate in successes and spills (70 vs 79–94 spikes per 1,000 substeps),
+  and is only weakly tied to the 50 Hz control updates.
+
+These remain sim-to-real caveats.
+
+### 12.2 Where the staged script's timeouts come from
+`scripts/diagnose_timeouts/stage_audit.py` reads a per-step trace (`scripted_baseline.py` arg 8)
+and puts every timeout into one bucket (rules in log.md, fixed before running).
+
+**No task was clock-limited.** At standoff arrival 206–227 of 250 steps remained, and successes
+needed 37–51.
+
+**Stage 1:**
+- Handoff misses: 1–4.5%. The arm hovered about 3.5 cm from the standoff against a 3 cm trigger.
+- Obstacle blocks: T0 9.2%, T4xneg 6.0%.
+
+**Stage 2:**
+- T2 lost contact: 10.9%. Once pushing, the script never re-aimed or re-acquired.
+- T0 wedged near closed: 3.9%.
+
+### 12.3 Fixes and calibration (thresholds chosen on F, T0 and T1 only)
+`staged2` = staged plus:
+- **Stall handoff:** within 6 cm of the standoff and closing by less than 0.5 mm per step. This is in
+  addition to the 3 cm radius.
+- **Contact-loss fallback:** if the forearm–mover distance exceeds 3 cm while pushing, return to the
+  standoff, at most 3 times per episode.
+
+A sideways re-aim toward the contact target during the push was also tried, on F, T0 and T1, 2 × 200
+episodes each:
+- **Full gain:** −4.7 / −14.5 / −13.5 points. It drags a forearm that made contact elsewhere along the
+  face.
+- **Gains 0.1, 0.25 and 0.5:** F/T0/T1 means 0.768, 0.763 and 0.731, against 0.771 without steering.
+
+Steering is therefore off, and available only as an ablation flag.
+
+Each piece alone on F / T0 / T1:
+- Stall handoff: +5.0 / +1.2 / +6.2.
+- Fallback: about 0.
+
+### 12.4 Frozen baseline: staged2 on v2, 8 seeds × 200 starts
+Same starts as every eval since §11. The script is deterministic. Ranges are over the 8 start sets.
+
+| Task | staged | **staged2** (range) | Reached standoff | Push from standoff | Spill | Timeout |
+|---|---|---|---|---|---|---|
+| F (training family) | 0.703 | **0.761** (0.730–0.780) | 0.76 | 0.890 | 11.4% | 12.6% |
+| T0 hinged door | 0.700 | **0.710** (0.655–0.740) | 0.86 | 0.829 | 11.9% | 17.1% |
+| T1 sliding door | 0.831 | **0.879** (0.855–0.910) | 0.95 | 0.924 | 9.3% | 2.8% |
+| T2 drawer (held out for RL) | 0.761 | **0.840** (0.805–0.885) | 0.87 | 0.910 | 7.4% | 8.6% |
+| T4x box | 0.889 | **0.907** (0.875–0.955) | 0.97 | 0.931 | 8.7% | 0.6% |
+| T4xneg box | 0.827 | **0.873** (0.835–0.905) | 0.77 | 0.955 | 4.0% | 8.9% |
+
+Timeout buckets for staged2, as a share of all episodes:
+
+| Bucket | F | T0 | T1 | T2 | T4x | T4xneg |
+|---|---|---|---|---|---|---|
+| S1 handoff miss | 0.1% | 0.1% | 0 | 0.1% | 0 | 0 |
+| S1 obstacle block | 6.2% | **9.4%** | 0.8% | 3.1% | 0 | 5.5% |
+| S1 out of time | 0.6% | 0.3% | 0 | 0.3% | 0 | 0.6% |
+| S1 IK / joint-limit stall | 1.9% | 0.7% | 0.9% | 0.5% | 0.1% | 1.0% |
+| S2 out of time | 1.9% | 1.9% | 0.1% | 0.9% | 0.1% | 0.7% |
+| S2 wedged | 1.4% | **4.3%** | 0.3% | 1.2% | 0.1% | 0.9% |
+| S2 lost contact | 0.4% | 0.3% | 0.6% | 2.2% | 0.3% | 0.1% |
+| S2 other | 0.1% | 0.1% | 0 | 0.3% | 0.1% | 0.1% |
+
+**What this shows**
+- With no learning, staged2 gets 0.71–0.91 on every task. On held-out T2 (0.840) its seed range does
+  not overlap staged's.
+- On F, G3's own training family, it scores 0.761. The G3 seeds checked there scored 0.31–0.74.
+- **What is left:**
+  - Stage-1 obstacle blocks: T0 9.4%, F 6.2%, T4xneg 5.5%, T2 3.1%.
+  - T0's near-closed wedge: 4.3%.
+  - Spill: 4–12%, the largest single failure on T1, T4x and F.
+
+**What this does not show**
+- **The bar.** The §11 "beats scripted control" bar (0.905, from staged's 0.755) is now outdated.
+  Applying the same rule to staged2 gives 0.99, which is not meaningful. G3's best T2 seed (0.865 on
+  v2) falls within staged2's range. How the RL comparison is restated is open (log.md).
+- **The steering result is narrow.** It applies to this one form of steering, toward the face-centre
+  point. Steering that keeps the forearm inside the face's extent was not tried.

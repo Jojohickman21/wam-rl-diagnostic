@@ -35,7 +35,16 @@ With [trace.npy], every control step is recorded per episode (stage_audit.py rea
 else, the task's normalised distance to its goal, the smallest joint-limit margin (joints 2, 4, 6), and the largest
 target lead |q_target - q| over joints 1-4.
 
-    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy] [slew] [trace.npy]
+Mode "staged2" (log.md 2026-11-27, Fixes 1 + 2 from the stage audit) is "staged" plus: (1) if the forearm is more
+than `loss` from the mover while pushing, the script falls back to the standoff, at most MAX_REACQUIRE times per
+episode (with "steer", the push goal also steers sideways toward the pre-contact point; off by default, it hurt every
+training task); (2) Stage 1 also hands off within HANDOFF_NEAR of the standoff once it closes by less than `stall` per
+control step. Outcome rows gain an 8th column, the number of re-acquires.
+
+    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged|staged2] [outcomes.npy] [slew]
+        [trace.npy] [loss] [stall] [steer | steer=<gain>]
+
+Ablations: loss 99 never falls back, stall -1 never hands off early, steer (or steer=<gain>) adds the sideways steering.
 """
 import sys
 
@@ -78,20 +87,32 @@ def target_and_direction():
     moving = np.cross(u.data.xaxis[joint], point_world - u.data.xanchor[joint]) * np.sign(u.goal[0] - u.data.qpos[u.qpos_adr[0]])
     return point_world, moving / max(np.linalg.norm(moving), 1e-9)
 
-trace_path = sys.argv[8] if len(sys.argv) > 8 else None
+trace_path = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != "-" else None
+# Frozen 2026-11-27 on F/T0/T1 only (log.md): loss 0.03, stall 0.0005, no steering. Steering toward the target point
+# cost 5-15 points on every training task (it drags a forearm that touched elsewhere along the face), so it is opt-in.
+loss = float(sys.argv[9]) if len(sys.argv) > 9 else 0.03
+stall = float(sys.argv[10]) if len(sys.argv) > 10 else 0.0005
+steer = float(sys.argv[11].split("=")[1]) if len(sys.argv) > 11 and sys.argv[11].startswith("steer=") else \
+    1.0 if len(sys.argv) > 11 and sys.argv[11] == "steer" else 0.0  # gain on the sideways correction
+HANDOFF_NEAR, MAX_REACQUIRE = 0.06, 3
+staged = mode in ("staged", "staged2")
 LIMITED = [1, 3, 5]  # joints 2, 4, 6: the only ones with stops inside +-2 pi
 traces, steps = [], []
 rows = []
 env.reset(seed=50_000 + seed)
 pushing, standoff_done = False, mode == "direct"
 last = np.zeros(env.action_space.shape, np.float32)
+previous_error, reacquires = np.inf, 0
 while len(rows) < episodes:
     target, direction = target_and_direction()
     if pushing:
         goal = u.data.geom_xpos[geom] + tf.PUSH_STEP / tf.GAIN * direction
+        if mode == "staged2" and steer:
+            offset = target - OFFSET * direction - u.data.geom_xpos[geom]
+            goal += steer * (offset - (offset @ direction) * direction)
     else:
         goal = target - (OFFSET if standoff_done else STANDOFF) * direction
-        if mode == "staged":
+        if staged:
             point = min(tf.FOREARM_POINTS, key=lambda g: np.linalg.norm(u.data.geom_xpos[u.model.geom(g).id] - goal))
             geom = u.model.geom(point).id
     action, error = tf.drive(u, goal, point)
@@ -100,11 +121,16 @@ while len(rows) < episodes:
         action = (last + np.clip(action - last, -slew, slew)).astype(np.float32)
     last = action
     _, _, terminated, truncated, info = env.step(action)
-    forearm = info["force/door_link4"] + info["force/door_link5"] + info["force/door_link6"] if mode == "staged" else info["force/door_link5"]
+    forearm = info["force/door_link4"] + info["force/door_link5"] + info["force/door_link6"] if staged else info["force/door_link5"]
     if not standoff_done:
-        standoff_done = error < AT_STANDOFF
+        stalled = mode == "staged2" and error < HANDOFF_NEAR and previous_error - error < stall
+        standoff_done = error < AT_STANDOFF or stalled
+        previous_error = error
     else:
         pushing |= error < tf.REACHED or forearm > 0
+        if mode == "staged2" and pushing and reacquires < MAX_REACQUIRE and u._link_distance() > loss:
+            pushing, standoff_done, previous_error = False, False, np.inf
+            reacquires += 1
     if trace_path:
         q = u.data.qpos[:7]
         margin = min(min(q[j] - u.ctrl_range[j, 0], u.ctrl_range[j, 1] - q[j]) for j in LIMITED)
@@ -116,11 +142,12 @@ while len(rows) < episodes:
             traces.append(np.array(steps, np.float32))
             steps = []
         rows.append((info["task/success"], info["task/valid_fraction"], info["task/spill"],
-                     float(truncated and not terminated), info["task/distance_norm"], float(pushing), float(standoff_done)))
+                     float(truncated and not terminated), info["task/distance_norm"], float(pushing), float(standoff_done), reacquires))
         env.reset()
         pushing, standoff_done = False, mode == "direct"
         last = np.zeros(env.action_space.shape, np.float32)
-        if mode == "staged":
+        previous_error, reacquires = np.inf, 0
+        if staged:
             point = "link5_c2"
             geom = u.model.geom(point).id
 v = np.array(rows)
@@ -129,11 +156,12 @@ if len(sys.argv) > 6:
 if trace_path:
     np.save(trace_path, np.array(traces, dtype=object), allow_pickle=True)
 won = v[:, 0] > 0
-print(f"scripted {mode} (cap {cap}{f', slew {slew}' if slew else ''}) seed {seed} on {task} ({episodes} episodes): "
+print(f"scripted {mode} (cap {cap}{f', slew {slew}' if slew else ''}{f', loss {loss}, stall {stall}' if mode == 'staged2' else ''}) seed {seed} on {task} ({episodes} episodes): "
       f"success {won.mean():.3f} | forearm-only {np.mean(won & (v[:, 1] > 0.9)):.3f} "
       f"| valid fraction of successes {v[won, 1].mean() if won.any() else float('nan'):.3f} "
       f"| spill {v[:, 2].mean():.3f} | timeout {v[:, 3].mean():.3f} "
       f"| reached push phase {v[:, 5].mean():.3f} | final distance (normalised) median {np.median(v[:, 4]):.2f}"
       + (f" | reached standoff {v[:, 6].mean():.3f} | success from standoff {won[v[:, 6] > 0].mean():.3f}"
-         f" | success without {won[v[:, 6] == 0].mean() if (v[:, 6] == 0).any() else float('nan'):.3f}" if mode == "staged" else ""),
+         f" | success without {won[v[:, 6] == 0].mean() if (v[:, 6] == 0).any() else float('nan'):.3f}" if staged else "")
+      + (f" | re-acquires per episode {v[:, 7].mean():.2f}" if mode == "staged2" else ""),
       flush=True)

@@ -7,7 +7,7 @@ and puts every timeout into one bucket (rules in log.md, first match wins, over 
 Per task it also reports the median time left when the standoff was reached (successes vs Stage-2 timeouts) and the
 median progress of Stage-2 timeouts.
 
-    python scripts/diagnose_timeouts/stage_audit.py <dir with staged_<task>_s<seed>.npy and .trace.npy> <task> [...]
+    python scripts/diagnose_timeouts/stage_audit.py <dir with <mode>_<task>_s<seed>.npy and .trace.npy> <task> [...] [--mode staged2]
 """
 import glob
 import sys
@@ -42,10 +42,10 @@ def bucket(t):
     return "other"
 
 
-def main(directory, tasks):
+def main(directory, tasks, mode="staged"):
     for task in tasks:
         outcomes, traces = [], []
-        for f in sorted(glob.glob(f"{directory}/staged_{task}_s?.npy")):
+        for f in sorted(glob.glob(f"{directory}/{mode}_{task}_s?.npy")):
             outcomes.append(np.load(f))
             traces += list(np.load(f.replace(".npy", ".trace.npy"), allow_pickle=True))
         v = np.concatenate(outcomes)
@@ -81,4 +81,6 @@ def main(directory, tasks):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2:])
+    args = sys.argv[2:]
+    mode = args[args.index("--mode") + 1] if "--mode" in args else "staged"
+    main(sys.argv[1], [a for a in args if a not in ("--mode", mode)], mode)
