@@ -5,7 +5,9 @@ processes pooled) and runs it on a TaskEnv with actions sampled from the policy,
 The normalisation statistics stay frozen at their trained values (applied by hand, as
 NormalizeObservation does with epsilon 1e-8, then clipped to ±10), so unseen tasks cannot shift them.
 
-    python scripts/eval_policy.py <train env id> <seed> <task> [episodes] [yaw spread, degrees]
+    python scripts/eval_policy.py <train env id> <seed> <task> [episodes] [yaw spread, degrees] [det]
+
+With `det`, the policy's mean action is used instead of a sample (output line says so).
 
 The default yaw spread is training's 20 degrees; a larger one tests unseen fixture orientations.
 """
@@ -26,6 +28,7 @@ from wam.tasks import TaskEnv  # noqa: E402
 train_env, seed, task = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 episodes = int(sys.argv[4]) if len(sys.argv) > 4 else 200
 yaw_spread = float(sys.argv[5]) if len(sys.argv) > 5 else 20.0
+deterministic = len(sys.argv) > 6 and sys.argv[6] == "det"
 outcome = "Outcome" in train_env
 # A label-trained policy sees the label form of the observation, with a one-hot over its training
 # tasks (all zeros for a task it never trained on); every other policy sees the full descriptor.
@@ -63,7 +66,8 @@ rows = []
 raw_obs, _ = raw.reset(seed=50_000 + seed)
 while len(rows) < episodes:
     with torch.no_grad():
-        action, *_ = agent.get_action_and_value(torch.tensor(frozen(raw_obs))[None])
+        x = torch.tensor(frozen(raw_obs))[None]
+        action = agent.actor_mean(x) if deterministic else agent.get_action_and_value(x)[0]
     raw_obs, _, terminated, truncated, info = raw.step(np.clip(action[0].numpy(), -1, 1))
     if terminated or truncated:
         rows.append((info["task/success"], info["task/valid_fraction"], info["task/spill"],
@@ -71,6 +75,6 @@ while len(rows) < episodes:
         raw_obs, _ = raw.reset()
 v = np.array(rows)
 won = v[:, 0] > 0
-print(f"{train_env} seed {seed} on {task} (yaw ±{yaw_spread:.0f}°, {episodes} episodes): "
+print(f"{train_env} seed {seed}{' (mean action)' if deterministic else ''} on {task} (yaw ±{yaw_spread:.0f}°, {episodes} episodes): "
       f"success {won.mean():.3f} | valid fraction of successes {v[won, 1].mean() if won.any() else float('nan'):.3f} "
       f"| spill {v[:, 2].mean():.3f} | timeout {v[:, 3].mean():.3f} | final distance (normalised) median {np.median(v[:, 4]):.2f}")

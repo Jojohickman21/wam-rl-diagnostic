@@ -1,0 +1,111 @@
+"""No-RL baseline for the G batch: a scripted push given exactly what G2 is told, on G2's eval starts.
+
+Per step it reads the contact target and push direction (TaskEnv.contact_target, the source of G2's
+contact features), drives one forearm point by damped least squares on joints 1-4 to OFFSET behind the
+target, then pushes along the push direction. The wrist leveler holds the plate, as in training. One
+attempt per start, one forearm point (link5_c2, the point G2's observation is measured from). Unlike
+task_feasibility.py there is no best-of-four-points retry. The push phase starts when the point is
+within REACHED of its goal or the forearm group touches the object (on hardware: external joint torque).
+
+`cap` scales the action so no joint moves faster than that fraction of full rate. Uncapped, the DLS step
+saturates at full rate and throws the tray object within ~8 steps. Tune `cap` on training tasks (F, T4x)
+only, then freeze it for T2.
+
+`mode` "staged" (2026-11-27, after Josiah's read of the T2 failure reel) changes only the approach. It
+first drives to a standoff STANDOFF in front of the face centre (level with it and aligned with the push
+normal), then straight in along the normal to OFFSET, then pushes as "direct" does. Until the push starts,
+the driven arm point slides: each step it is whichever of FOREARM_POINTS (elbow end to wrist end) is
+nearest the current goal; it is locked when the push starts. STANDOFF was fixed before any run, not tuned.
+
+Env, 250-step limit, yaw spread and reset seeds (50_000 + seed, then the env's own chain) match
+eval_policy.py, so seed s here sees the same starts as the policy of seed s. With [outcomes.npy], the
+per-episode rows (success, valid fraction, spill, timeout, final distance, reached push) are saved in
+episode order, to join with runs/diagnostics/t2_failures/start_heights.csv. A 7th column says whether the
+staged approach reached its standoff (always 1 in direct mode).
+
+Hinged movers (T0's door): TaskEnv.contact_target only handles slide joints, so the script pushes
+HINGE_FRACTION of the way from the hinge along the door, on its arm-side face, in the direction that point
+moves as the door closes (recomputed every step, so the push turns with the door).
+
+    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy]
+"""
+import sys
+
+import gymnasium as gym
+import mujoco
+import numpy as np
+
+sys.path.insert(0, "scripts")
+sys.path.insert(0, ".")
+import task_feasibility as tf  # noqa: E402
+from wam.tasks import TaskEnv  # noqa: E402
+
+task, seed = sys.argv[1], int(sys.argv[2])
+episodes = int(sys.argv[3]) if len(sys.argv) > 3 else 200
+cap = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+mode = sys.argv[5] if len(sys.argv) > 5 else "direct"
+point = "link5_c2"
+OFFSET = 0.04 + 0.01  # capsule radius + margin; the contact target is already on the surface
+STANDOFF, AT_STANDOFF = 0.15, 0.03  # m in front of the face; how close counts as there
+HINGE_FRACTION = 2 / 3
+
+u = TaskEnv(task=task, cabinet_spread=(0.1, np.radians(20.0)), conditioning="contact")
+env = gym.wrappers.TimeLimit(u, 250)
+geom = u.model.geom(point).id
+hinge = u.model.jnt_type[u.joint_ids[0]] == mujoco.mjtJoint.mjJNT_HINGE
+if hinge:
+    door = u.mover_geoms[0]
+    half = u.model.geom_size[door]
+    local = u.model.geom_pos[door] + np.array([(2 * HINGE_FRACTION - 1) * half[0], 0.0, 0.0]) + half[1] * np.array(u.outward_local)
+
+
+def target_and_direction():
+    """Point to push and the direction it moves toward the goal."""
+    if not hinge:
+        return u.contact_target()
+    rot = u.data.xmat[u.mover_body].reshape(3, 3)
+    point_world = u.data.xpos[u.mover_body] + rot @ local
+    joint = u.joint_ids[0]
+    moving = np.cross(u.data.xaxis[joint], point_world - u.data.xanchor[joint]) * np.sign(u.goal[0] - u.data.qpos[u.qpos_adr[0]])
+    return point_world, moving / max(np.linalg.norm(moving), 1e-9)
+
+rows = []
+env.reset(seed=50_000 + seed)
+pushing, standoff_done = False, mode == "direct"
+while len(rows) < episodes:
+    target, direction = target_and_direction()
+    if pushing:
+        goal = u.data.geom_xpos[geom] + tf.PUSH_STEP / tf.GAIN * direction
+    else:
+        goal = target - (OFFSET if standoff_done else STANDOFF) * direction
+        if mode == "staged":
+            point = min(tf.FOREARM_POINTS, key=lambda g: np.linalg.norm(u.data.geom_xpos[u.model.geom(g).id] - goal))
+            geom = u.model.geom(point).id
+    action, error = tf.drive(u, goal, point)
+    action *= min(1.0, cap / max(np.abs(action).max(), 1e-9))
+    _, _, terminated, truncated, info = env.step(action)
+    forearm = info["force/door_link4"] + info["force/door_link5"] + info["force/door_link6"] if mode == "staged" else info["force/door_link5"]
+    if not standoff_done:
+        standoff_done = error < AT_STANDOFF
+    else:
+        pushing |= error < tf.REACHED or forearm > 0
+    if terminated or truncated:
+        rows.append((info["task/success"], info["task/valid_fraction"], info["task/spill"],
+                     float(truncated and not terminated), info["task/distance_norm"], float(pushing), float(standoff_done)))
+        env.reset()
+        pushing, standoff_done = False, mode == "direct"
+        if mode == "staged":
+            point = "link5_c2"
+            geom = u.model.geom(point).id
+v = np.array(rows)
+if len(sys.argv) > 6:
+    np.save(sys.argv[6], v)
+won = v[:, 0] > 0
+print(f"scripted {mode} (cap {cap}) seed {seed} on {task} ({episodes} episodes): "
+      f"success {won.mean():.3f} | forearm-only {np.mean(won & (v[:, 1] > 0.9)):.3f} "
+      f"| valid fraction of successes {v[won, 1].mean() if won.any() else float('nan'):.3f} "
+      f"| spill {v[:, 2].mean():.3f} | timeout {v[:, 3].mean():.3f} "
+      f"| reached push phase {v[:, 5].mean():.3f} | final distance (normalised) median {np.median(v[:, 4]):.2f}"
+      + (f" | reached standoff {v[:, 6].mean():.3f} | success from standoff {won[v[:, 6] > 0].mean():.3f}"
+         f" | success without {won[v[:, 6] == 0].mean() if (v[:, 6] == 0).any() else float('nan'):.3f}" if mode == "staged" else ""),
+      flush=True)
