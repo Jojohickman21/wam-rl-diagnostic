@@ -114,7 +114,11 @@ def add_tray_object(spec):
     # Without both, soft-contact creep slides the cylinder off at about 60% of its
     # friction angle; with them it holds at 90% and slides at 110% (scripts/calibrate_tray.py).
     spec.option.noslip_iterations = 10
-    spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    # MuJoCo < 4 needs the enable bit; MuJoCo 4 made multiccd default-on and removed the bit (mjDSBL_MULTICCD instead).
+    if hasattr(mujoco.mjtEnableBit, "mjENBL_MULTICCD"):
+        spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    else:
+        spec.option.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
     if TRAY_CCD_TOLERANCE is not None:
         spec.option.ccd_tolerance = TRAY_CCD_TOLERANCE
 
