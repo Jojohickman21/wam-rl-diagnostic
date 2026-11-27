@@ -52,6 +52,17 @@ EE_LEAD = 0.03  # m
 
 # A7 tray object: a squat cylinder that slides before it tips (tip angle atan(2r/h) = 56 deg).
 OBJECT_RADIUS, OBJECT_HALF_HEIGHT, OBJECT_MASS = 0.03, 0.02, 0.2  # m, m, kg
+# Collision of the plate and the tray object (env v2, log.md 2026-11-27). With primitive cylinders and the native CCD
+# at its default tolerance, the cylinder-on-plate pair sometimes reports a fixed 48 mm penetration for one substep and
+# the solver ejects the object ("pop"): ~4% of staged T2 episodes, a third of their spills. TRAY_PRISM_SIDES > 0
+# collides both as convex prisms with that many sides (0: primitive cylinders); TRAY_CCD_TOLERANCE None keeps
+# MuJoCo's default. Chosen by scripts/diagnose_timeouts/pop_rate.py and the creep grid in log.md (2026-11-27): both
+# 64/32-sided prisms and tolerance 1e-9 remove pops (0 in 800 episodes each, vs 35), but prisms make 5 of 10 seeds
+# creep at 95% of the slide angle (primitive: 0-1 of 10), so v2 keeps primitive cylinders at tolerance 1e-9.
+TRAY_PRISM_SIDES = 0
+TRAY_CCD_TOLERANCE = 1e-9
+SETTLE_STEPS = 250  # physics substeps (250 ms) held at reset: the tray object lands within ~30 ms, the arm's gravity
+# sag (~0.02 rad) decays below 0.02 rad/s by ~250 ms, so the first action starts from rest
 PLATE_RADIUS, PLATE_HALF_THICKNESS = 0.09, 0.004  # must match the plate geom in xarm7_wam.xml
 SLIDE_ANGLE_RANGE = (np.radians(15.0), np.radians(35.0))
 # Below this the arm can pin the cylinder against the floor and crush it 15 mm into it.
@@ -64,6 +75,48 @@ BODY_GROUP = {
     "link4": "link4", "link5": "link5", "link6": "link6", "link7": "ee",
 }
 
+
+
+def plate_mount(spec):
+    """The plate geom's rotation in link 7's frame, as written in the scene XML (before any mesh swap)."""
+    rotation = np.zeros(9)
+    quat = np.array(spec.geom("plate").quat, float)
+    mujoco.mju_quat2Mat(rotation, quat / np.linalg.norm(quat))
+    return rotation.reshape(3, 3)
+
+
+def _prism(spec, name, radius, half_height, sides):
+    """Convex prism mesh approximating a cylinder along z, vertices on the circle of `radius`."""
+    angles = 2 * np.pi * np.arange(sides) / sides
+    ring = np.stack([radius * np.cos(angles), radius * np.sin(angles)], 1)
+    vertices = np.concatenate([np.column_stack([ring, np.full(sides, z)]) for z in (-half_height, half_height)])
+    spec.add_mesh(name=name, uservert=vertices.ravel().tolist())
+    return name
+
+
+def add_tray_object(spec):
+    """The A7 tray object (a free cylinder) and the contact options its plate contact needs."""
+    body = spec.worldbody.add_body(name="tray_object")
+    body.add_freejoint()
+    geom = body.add_geom(
+        name="tray_object", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+        size=[OBJECT_RADIUS, OBJECT_HALF_HEIGHT, 0], mass=OBJECT_MASS, rgba=[0.9, 0.6, 0.1, 1],
+        contype=1, conaffinity=1, condim=3, solref=[0.002, 1], solimp=[0.95, 0.99, 0.001, 0.5, 2],
+        # Higher priority makes the contact use this geom's friction, not the max of both.
+        priority=1,
+    )
+    if TRAY_PRISM_SIDES:
+        plate = spec.geom("plate")
+        plate.type, plate.meshname = mujoco.mjtGeom.mjGEOM_MESH, _prism(
+            spec, "plate_prism", PLATE_RADIUS, PLATE_HALF_THICKNESS, TRAY_PRISM_SIDES)
+        geom.type, geom.meshname = mujoco.mjtGeom.mjGEOM_MESH, _prism(
+            spec, "tray_object_prism", OBJECT_RADIUS, OBJECT_HALF_HEIGHT, TRAY_PRISM_SIDES)
+    # Without both, soft-contact creep slides the cylinder off at about 60% of its
+    # friction angle; with them it holds at 90% and slides at 110% (scripts/calibrate_tray.py).
+    spec.option.noslip_iterations = 10
+    spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+    if TRAY_CCD_TOLERANCE is not None:
+        spec.option.ccd_tolerance = TRAY_CCD_TOLERANCE
 
 class CloseCabinetEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
@@ -123,20 +176,9 @@ class CloseCabinetEnv(gym.Env):
         square of that half-width in x and y and turned about z by up to that angle.
         """
         spec = mujoco.MjSpec.from_file(str(SCENE))
+        self.plate_mount = plate_mount(spec)
         if tray_object:
-            body = spec.worldbody.add_body(name="tray_object")
-            body.add_freejoint()
-            body.add_geom(
-                name="tray_object", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                size=[OBJECT_RADIUS, OBJECT_HALF_HEIGHT, 0], mass=OBJECT_MASS, rgba=[0.9, 0.6, 0.1, 1],
-                contype=1, conaffinity=1, condim=3, solref=[0.002, 1], solimp=[0.95, 0.99, 0.001, 0.5, 2],
-                # Higher priority makes the contact use this geom's friction, not the max of both.
-                priority=1,
-            )
-            # Without both, soft-contact creep slides the cylinder off at about 60% of its
-            # friction angle; with them it holds at 90% and slides at 110% (scripts/calibrate_tray.py).
-            spec.option.noslip_iterations = 10
-            spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+            add_tray_object(spec)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
@@ -226,6 +268,13 @@ class CloseCabinetEnv(gym.Env):
         self.q_target = self.data.qpos[:7].copy()
         self.data.ctrl[:] = self.q_target
         self.last_action = np.zeros(7)
+        if self.tray_object:
+            # The cylinder is placed 1 mm above the plate and the arm sags under gravity from its start; holding
+            # still lets both settle before the first action. Without this, the first move carried the plate
+            # away under a cylinder that had not landed in ~30% of staged T2 spills (log.md 2026-11-27).
+            for _ in range(SETTLE_STEPS):
+                mujoco.mj_step(self.model, self.data)
+            self.data.time = 0.0
         return self._finish_reset()
 
     def _draw_start(self):
@@ -368,7 +417,7 @@ class CloseCabinetEnv(gym.Env):
             [self.tilt_max if self.observe_slide_angle else TILT_MAX],
         ]
         if self.observe_object:
-            to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
+            to_plate = self._plate_frame().T
             offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
             velocity = qvel[self.object_qvel : self.object_qvel + 3]
             obs += [to_plate @ offset, to_plate @ velocity]
@@ -444,9 +493,14 @@ class CloseCabinetEnv(gym.Env):
         q, (low, high) = self.data.qpos[self.limited_joints], self.ctrl_range[self.limited_joints].T
         return np.clip(np.minimum(q - low, high - q), 0.0, MARGIN_CAP)
 
+    def _plate_frame(self):
+        """World rotation of the plate as mounted on link 7 (z = plate axis). Read from link 7, not the plate geom:
+        a mesh geom's frame is re-oriented to the mesh's principal axes, which permutes them for a prism."""
+        return self.data.xmat[self.link7].reshape(3, 3) @ self.plate_mount
+
     def _plate_up(self):
         """Unit normal of the plate's upper face (the plate is levelled with either face up)."""
-        axis = self.data.geom_xmat[self.plate_geom].reshape(3, 3)[:, 2]
+        axis = self._plate_frame()[:, 2]
         return axis if axis[2] >= 0.0 else -axis
 
     def _object_point_velocity(self):
@@ -485,7 +539,7 @@ class CloseCabinetEnv(gym.Env):
             self.data.geom_xpos[self.plate_geom] + lift * up
         )
         quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, self.data.geom_xmat[self.plate_geom])
+        mujoco.mju_mat2Quat(quat, self._plate_frame().ravel())
         self.data.qpos[self.object_qpos + 3 : self.object_qpos + 7] = quat
 
     def _spilled(self):

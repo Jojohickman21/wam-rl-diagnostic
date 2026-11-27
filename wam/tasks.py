@@ -27,7 +27,7 @@ from wam.close_cabinet import (
     ACTION_SCALE, BODY_GROUP, CONTACT_GROUPS, FRAME_SKIP, F_MAX, F_MIN, MAX_LEAD, MIN_TRAY_HEIGHT, REACH_SCALE,
     REWARD_TERMS, SPILL_PENALTY, START_TILT, SUCCESS_BONUS, TILT_MAX, TILT_FREE, W_ACTION_RATE,
     W_ENERGY, W_FORCE, W_JOINT_VEL, W_PROGRESS, W_REACH, W_TILT, W_TORQUE, W_WRONG, SLIDE_ANGLE_RANGE,
-    CloseCabinetEnv,
+    CloseCabinetEnv, add_tray_object, plate_mount,
 )
 
 ASSETS = Path(__file__).parents[1] / "assets"
@@ -91,17 +91,9 @@ class TaskEnv(CloseCabinetEnv):
         self.task = task
         self.spec_ = spec_
         spec = mujoco.MjSpec.from_file(str(ASSETS / spec_["scene"]))
+        self.plate_mount = plate_mount(spec)
         if tray_object:
-            body = spec.worldbody.add_body(name="tray_object")
-            body.add_freejoint()
-            body.add_geom(
-                name="tray_object", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                size=[0.03, 0.02, 0], mass=0.2, rgba=[0.9, 0.6, 0.1, 1],
-                contype=1, conaffinity=1, condim=3, solref=[0.002, 1], solimp=[0.95, 0.99, 0.001, 0.5, 2],
-                priority=1,
-            )
-            spec.option.noslip_iterations = 10
-            spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
+            add_tray_object(spec)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
@@ -449,7 +441,7 @@ class TaskEnv(CloseCabinetEnv):
             if self.conditioning == "contact_fk":
                 obs.append(self.fk_features())
         if self.observe_object:
-            to_plate = self.data.geom_xmat[self.plate_geom].reshape(3, 3).T
+            to_plate = self._plate_frame().T
             offset = self.data.geom_xpos[self.object_geom] - self.data.geom_xpos[self.plate_geom]
             obs += [to_plate @ offset, to_plate @ qvel[self.object_qvel : self.object_qvel + 3]]
         return np.concatenate(obs).astype(np.float32)
