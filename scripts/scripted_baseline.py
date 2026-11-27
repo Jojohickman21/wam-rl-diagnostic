@@ -27,7 +27,10 @@ Hinged movers (T0's door): TaskEnv.contact_target only handles slide joints, so 
 HINGE_FRACTION of the way from the hinge along the door, on its arm-side face, in the direction that point
 moves as the door closes (recomputed every step, so the push turns with the door).
 
-    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy]
+`slew` > 0 limits how much the action may change per control step (every joint, from 0 at episode start). Without
+it the first action jumps from rest to the cap and throws a settled cylinder (2.8% of staged T2 episodes on env v2).
+
+    python scripts/scripted_baseline.py <task> <seed> [episodes] [cap] [direct|staged] [outcomes.npy] [slew]
 """
 import sys
 
@@ -46,6 +49,7 @@ cap = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 mode = sys.argv[5] if len(sys.argv) > 5 else "direct"
 point = "link5_c2"
 OFFSET = 0.04 + 0.01  # capsule radius + margin; the contact target is already on the surface
+slew = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
 STANDOFF, AT_STANDOFF = 0.15, 0.03  # m in front of the face; how close counts as there
 HINGE_FRACTION = 2 / 3
 
@@ -72,6 +76,7 @@ def target_and_direction():
 rows = []
 env.reset(seed=50_000 + seed)
 pushing, standoff_done = False, mode == "direct"
+last = np.zeros(env.action_space.shape, np.float32)
 while len(rows) < episodes:
     target, direction = target_and_direction()
     if pushing:
@@ -83,6 +88,9 @@ while len(rows) < episodes:
             geom = u.model.geom(point).id
     action, error = tf.drive(u, goal, point)
     action *= min(1.0, cap / max(np.abs(action).max(), 1e-9))
+    if slew:
+        action = (last + np.clip(action - last, -slew, slew)).astype(np.float32)
+    last = action
     _, _, terminated, truncated, info = env.step(action)
     forearm = info["force/door_link4"] + info["force/door_link5"] + info["force/door_link6"] if mode == "staged" else info["force/door_link5"]
     if not standoff_done:
@@ -94,6 +102,7 @@ while len(rows) < episodes:
                      float(truncated and not terminated), info["task/distance_norm"], float(pushing), float(standoff_done)))
         env.reset()
         pushing, standoff_done = False, mode == "direct"
+        last = np.zeros(env.action_space.shape, np.float32)
         if mode == "staged":
             point = "link5_c2"
             geom = u.model.geom(point).id
@@ -101,7 +110,7 @@ v = np.array(rows)
 if len(sys.argv) > 6:
     np.save(sys.argv[6], v)
 won = v[:, 0] > 0
-print(f"scripted {mode} (cap {cap}) seed {seed} on {task} ({episodes} episodes): "
+print(f"scripted {mode} (cap {cap}{f', slew {slew}' if slew else ''}) seed {seed} on {task} ({episodes} episodes): "
       f"success {won.mean():.3f} | forearm-only {np.mean(won & (v[:, 1] > 0.9)):.3f} "
       f"| valid fraction of successes {v[won, 1].mean() if won.any() else float('nan'):.3f} "
       f"| spill {v[:, 2].mean():.3f} | timeout {v[:, 3].mean():.3f} "

@@ -33,7 +33,7 @@ cause, first rule that matches:
   brief         μ_req > μ, but under 20 ms and not tied to an impact or action update
   no_exceed     μ_req never exceeds μ in the window (slip not explained by the plate's motion)
 
-    python scripts/diagnose_timeouts/spill_audit.py <seed> <out.npz>
+    python scripts/diagnose_timeouts/spill_audit.py <seed> <out.npz> [slew]
     python scripts/diagnose_timeouts/spill_audit.py --summary <out*.npz>
 """
 import runpy
@@ -51,7 +51,7 @@ EPISODES = int(__import__("os").environ.get("EPISODES", 200))  # fewer for a smo
 LABELS = ("startup", "contact_pop", "object_hit", "tilt", "impact", "action_step", "sustained", "brief", "no_exceed")
 
 
-def record(seed, out):
+def record(seed, out, slew=0.0):
     model_ids = {}
     episodes, current = [], []
     original = mujoco.mj_step
@@ -133,7 +133,7 @@ def record(seed, out):
     cc.CloseCabinetEnv.reset = marked_reset
     mujoco.mj_step = logged_step
     outcomes = f"{out}.outcomes.npy"
-    sys.argv = ["scripted_baseline.py", "T2", str(seed), str(EPISODES), "0.5", "staged", outcomes]
+    sys.argv = ["scripted_baseline.py", "T2", str(seed), str(EPISODES), "0.5", "staged", outcomes, str(slew)]
     runpy.run_path("scripts/scripted_baseline.py", run_name="__main__")
     mujoco.mj_step = original
     if current:
@@ -255,4 +255,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "--summary":
         summary(sys.argv[2:])
     else:
-        record(int(sys.argv[1]), sys.argv[2])
+        record(int(sys.argv[1]), sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 0.0)
