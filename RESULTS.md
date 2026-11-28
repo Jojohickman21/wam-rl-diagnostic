@@ -1462,58 +1462,54 @@ score, IQR, and 95% bootstrap CIs.
    training env's kwargs, as eval_policy.py does now. If F_geom adds inputs TaskEnv cannot produce for those
    tasks, the evaluator stops with an error rather than guessing.
 
-## 14. W1: GPU PPO in MuJoCo Warp, scored in C MuJoCo (2026-11-28; seeds 1–2 pending)
+## 14. W1: GPU PPO in MuJoCo Warp, scored in C MuJoCo (2026-11-28)
 
 **Setup** (pre-registered in log.md, "Warp run W1", before launch). G3's task, observation (46), reward and
 64-64 tanh policy, trained on family F in the batched MuJoCo Warp env (`wam/warp_env.py`, §12 physics on MuJoCo
 4.0.1, reach distance approximated). Training settings:
 - 4,096 worlds × 32 steps per update, 4 minibatches, 5 epochs;
 - entropy coefficient 0.01, learning rate 3e-4 annealed;
-- 200M steps per seed, seeds 1–3, about 33,000 steps/s on a shared RTX A6000.
+- 200M steps per seed, seeds 1–3, about 17,000–33,000 steps/s on a shared RTX A6000.
 
-Every reported number is evaluated in C MuJoCo 3.3.7 on frozen v2 (`eval_policy.py --exp w1`, mean action,
-200 episodes per task, the usual starts).
+Every number below is evaluated in C MuJoCo 3.3.7 on frozen v2 (`eval_policy.py --exp w1`, mean action,
+200 episodes per task, the usual starts; raw lines in `runs/diagnostics/w1_evals/`).
 
 **What differs from G3** (CPU, 20M steps): about 10× the samples, 4,096 parallel worlds, the exploration
 settings, and the simulator used for training. The network, observation, reward and the 4+3 controller split
 are unchanged.
 
-**Results so far**
+| Task | seed 1 | seed 2 | seed 3 | **mean** (range) | spill | staged2 (§12) | G3 (§10–12) |
+|---|---|---|---|---|---|---|---|
+| F (training family) | 0.910 | 0.855 | 0.950 | **0.905** (0.855–0.950) | 9.5% | 0.761 | 0.31–0.74 (4 seeds) |
+| T1 sliding door | 0.990 | 0.980 | 0.985 | **0.985** (0.980–0.990) | 1.5% | 0.879 | — |
+| T2 drawer, held out | 0.955 | 0.965 | 0.950 | **0.957** (0.950–0.965) | 3.5% | 0.840 | 0.563 |
+| T4x box | 0.980 | 0.990 | 0.995 | **0.988** (0.980–0.995) | 1.0% | 0.907 | — |
+| T4xneg box | 0.945 | 0.975 | 0.990 | **0.970** (0.945–0.990) | 3.0% | 0.873 | — |
+| T0 hinged door | 0.025 | 0.290 | 0.050 | 0.122 (0.025–0.290) | 38.8% | 0.710 | — |
 
-| Task | seed 3, final (200M) | seed 1 (95M, interim) | seed 3 (147M, interim) | staged2 (§12) | G3 (§10–12) |
-|---|---|---|---|---|---|
-| F (training family) | **0.950** | 0.935 | 0.955 | 0.761 | 0.31–0.74 (4 seeds) |
-| T1 sliding door | **0.985** | 0.980 | 0.995 | 0.879 | — |
-| T2 drawer, held out | **0.950** | 0.900 | 0.950 | 0.840 | 0.563 |
-| T4x box | **0.995** | 0.985 | 1.000 | 0.907 | — |
-| T4xneg box | **0.990** | 0.925 | 0.995 | 0.873 | — |
-| T0 hinged door | 0.050 | 0.110 | 0.050 | 0.710 | — |
+**Pre-registered predictions**
+- **W1-P1** (final action std ≥ 0.065 on 3/3 seeds): met (minimum per seed 4.74–4.81), but trivially. The entropy
+  bonus inflated the noise around a clipped action to std ~5–10, so this no longer measures healthy exploration.
+- **W1-P2** (mean F ≥ 0.80): met, 0.905.
+- **W1-P3** (mean held-out T2 ≥ 0.70): met, 0.957.
+- **W1-P4** (Warp training success over the last ~1M steps within 0.10 of the C-evaluated F score): met on 2 of 3
+  seeds. Gaps: +0.058, +0.112 (seed 2), +0.020; mean +0.063. **Not met as written** for seed 2. The comparison is
+  confounded: the Warp number comes from the stochastic policy (std ~5) and the C number from the mean action, so
+  the gap is not purely physics.
 
-- **Seed 3 final:**
-  - Spill ≤ 5% and timeout ≤ 1.5% on every sliding task.
-  - T0: 0.485 spill, 0.465 timeout.
-  - Warp training success over its last ~1M steps was 0.970, against 0.950 for F in C. The train/evaluate gap is 0.02.
-- **Hinge:** family F has only slide joints, so T0 is outside the training distribution in kind. This is a
-  scope limit, not a regression.
-- **Action std:** it grew to 5.9 / 4.75 / 8.7 / 10.1 by the end of training. The entropy bonus inflates the
-  noise around a clipped action at no cost to the policy. Evaluation uses the mean action, so the scores stand,
-  but prediction W1-P1 (std ≥ 0.065) is met trivially and no longer measures healthy exploration. Later runs
-  should use a squashed or capped policy.
-- **Two crashes on the way:**
-  - Seeds 1–2 hit NaN at 95M and 48M steps, from a diverged world's NaN observation. Non-finite worlds are now
-    reset (e9de79d).
-  - Their first resume failed on a GPU-only RNG-state bug (2cd4628).
-  - They continue from clean checkpoints at iterations 725 and 350.
+**What this shows**
+- With scale and exploration changed and nothing else, the G3 setup goes from 0.563 to 0.957 on held-out T2.
+- It beats the training-free staged2 controller on all five sliding tasks, on every seed, with no overlap in
+  seed ranges.
+- T2's object (drawer and chest) and its push directions (10–50°) never appear in training.
 
-**Pending:** seeds 1–2 final, then the four pre-registered predictions scored across seeds (W1-P1 std,
-W1-P2 F ≥ 0.80, W1-P3 T2 ≥ 0.70, W1-P4 Warp-vs-C within 0.10).
+**What it does not show**
+- **Hinge transfer.** T0 is 0.122 because family F has only slide joints. That is a scope limit, not a regression.
+- **Why it works.** Whether the gain comes from scale, from exploration, or from both. The CPU exploration test
+  (log.md) and a Warp run with G3's original settings would separate them.
+- **Hardware.** No hardware result, and the policy still uses oracle contact targets.
+- **Robustness to the std inflation.** Later runs need a squashed or capped policy.
 
-**What this shows so far (one final seed plus two interim checkpoints):**
-- With scale and exploration fixed, the same RL setup that reached 0.563 on held-out T2 now reaches 0.90–0.95.
-- It beats the training-free geometric controller staged2 on all five sliding tasks, held-out T2 included.
-
-**What it does not show:**
-- Hinge transfer.
-- Behaviour on hardware.
-- Whether the gain comes from scale, from exploration, or from both. Separating those needs the CPU exploration
-  test (log.md), or a Warp run with G3's original settings.
+**Run history.** Seeds 1–2 hit a NaN at 95M and 48M steps, from a diverged world's NaN observation; non-finite
+worlds are now reset (e9de79d). Their first resume failed on a GPU-only RNG-state bug (2cd4628). Both then
+resumed from clean checkpoints and finished with zero non-finite worlds.
