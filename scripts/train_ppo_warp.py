@@ -48,6 +48,9 @@ def parse():
     p.add_argument("--vf-coef", type=float, default=0.5)
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--max-std", type=float, default=0.0,
+                   help="cap on the policy's action std (0: none). With actions clipped to [-1, 1] the entropy bonus "
+                        "otherwise inflates std at no cost (W1 reached 5-10)")
     p.add_argument("--pool-size", type=int, default=20_000)
     p.add_argument("--pool-workers", type=int, default=4, help="processes drawing the start pool (cached per seed)")
     p.add_argument("--device", default="cuda:0")
@@ -64,8 +67,9 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     """train_ppo.py's Agent, with the hidden width as a parameter (64 there)."""
 
-    def __init__(self, obs_dim, act_dim, hidden=64):
+    def __init__(self, obs_dim, act_dim, hidden=64, max_std=None):
         super().__init__()
+        self.max_logstd = float(np.log(max_std)) if max_std else None
         self.critic = nn.Sequential(layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(), layer_init(nn.Linear(hidden, hidden)),
                                     nn.Tanh(), layer_init(nn.Linear(hidden, 1), std=1.0))
         self.actor_mean = nn.Sequential(layer_init(nn.Linear(obs_dim, hidden)), nn.Tanh(), layer_init(nn.Linear(hidden, hidden)),
@@ -77,7 +81,8 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         mean = self.actor_mean(x)
-        probs = Normal(mean, torch.exp(self.actor_logstd.expand_as(mean)))
+        logstd = self.actor_logstd if self.max_logstd is None else self.actor_logstd.clamp(max=self.max_logstd)
+        probs = Normal(mean, torch.exp(logstd.expand_as(mean)))
         if action is None:
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
@@ -117,7 +122,7 @@ def main():
 
     env = WarpFamilyEnv(args.num_envs, pool, device=args.device, seed=args.seed)
     obs_dim, act_dim = 46, 4
-    agent = Agent(obs_dim, act_dim, args.hidden).to(device)
+    agent = Agent(obs_dim, act_dim, args.hidden, args.max_std or None).to(device)
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     obs_rms, ret_rms = RunningMeanStd(obs_dim, device), RunningMeanStd((), device)
     returns_acc = torch.zeros(args.num_envs, device=device, dtype=torch.float64)
@@ -234,7 +239,7 @@ def main():
                 optimizer.step()
 
         sps = int((global_step - start_step) / (time.time() - start))
-        std = agent.actor_logstd.exp().detach()
+        std = agent.actor_logstd.exp().detach().clamp(max=args.max_std or float("inf"))
         n = max(ended["n"], 1)
         row = [it, global_step, sps, ended["n"], ended["success"] / n, ended["spill"] / n, ended["timeout"] / n,
                ended["valid"] / max(ended["success"], 1), float(std.min()), float(std.mean()), float(entropy.mean().detach()),
