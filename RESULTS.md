@@ -1369,3 +1369,151 @@ Timeout buckets for staged2, as a share of all episodes:
   v2) falls within staged2's range. How the RL comparison is restated is open (log.md).
 - **The steering result is narrow.** It applies to this one form of steering, toward the face-centre
   point. Steering that keeps the forearm inside the face's extent was not tried.
+
+## 13. Pre-registered evaluation for F_geom RL (written 2026-11-27, before any F_geom env or training exists)
+
+The gates are Josiah's, recorded verbatim below. `scripts/eval_preregistered.py` enforces them and prints
+pass/fail per gate. Everything under "Operational definitions" is my translation of the wording into
+measurements. It was fixed at the same time as the gates, and Josiah should confirm it before the first run.
+F_geom, its housing-force term and the parameters d_recess, d_overhang and w_h_force do not exist in the repo
+yet. The evaluator takes the F_geom env ids as arguments.
+
+### 13.1 Protocol
+8 seeds × 200 episodes = 1,600 episodes per task on frozen env v2 (`7853b61` physics; current code `e5cf7eb`),
+identical reset seeds across methods, deterministic policy mean (`det=True`). Report 8-seed mean, worst-seed
+score, IQR, and 95% bootstrap CIs.
+
+### 13.2 Gates (verbatim)
+**Gate 0 (must pass before any OOD evaluation):**
+1. Final policy action std ≥ 0.065 on 8/8 seeds.
+2. F_geom held-out validation (1,000 unseen procedural scenes): mean ≥ 0.850, worst seed ≥ 0.780.
+3. Sustained housing collision rate (F_house > 10 N for ≥ 5 steps) ≤ 5.0%.
+
+**Phase 1 OOD bars (T0, T1, T2, T4x, T4xneg vs. the fixed staged script S_script):**
+1. Macro-mean: S_PPO ≥ S_script + 0.030 with 95% bootstrap CI strictly > 0.
+2. T0: S_PPO ≥ S_script + 0.080; Stage-1 housing collisions < 4.0%; Stage-2 wedges < 2.0%.
+3. T4xneg: S_PPO ≥ S_script + 0.050; Stage-1 housing collisions < 3.0%.
+4. T2 (held-out): S_PPO ≥ S_script − 0.020 AND ≥ 0.840 overall.
+5. Reliability: ≥ 7/8 seeds macro-mean ≥ 0.800; worst seed macro-mean ≥ 0.750.
+6. Tray safety: mean cylinder spill ≤ 5.0% across the 5 tasks, max single-task spill ≤ 7.0%.
+
+**Phase 2 OOD bars (one-look point-cloud PPO):**
+1. Visual-to-state retention: S_visual ≥ 0.92 × S_state across T0–T4xneg.
+2. Beats the direct oracle baseline without oracle targets: S_visual ≥ 0.800.
+
+**Post-run decision branches:**
+- **A** (Gate 0 + all of Phase 1 pass): freeze the state-input policy and weights, move to Phase 2 point-cloud input.
+- **B** (T0/T4xneg pass, T2/T1 trails S_script by > 0.03 due to contact drift): switch the PPO action space to
+  contact-anchor selection + clearance waypoint + push residual over the 4+3 leveling kinematics.
+- **C** (Gate 0 passes, T0/T4xneg obstacle blocks > 5%): widen d_recess/d_overhang and raise w_h_force from 0.25 to 0.40.
+
+### 13.3 Operational definitions (mine, fixed with the gates)
+- **S_script** = `scripted_baseline.py` mode staged2 as frozen in e5cf7eb (§12.4), run by the evaluator on the
+  same starts with the same instrumentation. Its v2 values: T0 0.710, T1 0.879, T2 0.840, T4x 0.907, T4xneg 0.873
+  (macro 0.842).
+- **Starts:** task t, seed s uses eval_policy.py's chain (reset seed 50,000 + s, then the env's own sequence),
+  the same for PPO, S_script and every earlier eval. Policy seed s is evaluated on start set s, so episodes are
+  paired with S_script's.
+- **Deterministic:** the actor's mean action, clipped to [−1, 1]. Observation normalisation frozen at the run's
+  saved obs_rms.npz (pooled), as in eval_policy.py.
+- **Action std (Gate 0.1):** exp(actor_logstd) of the saved checkpoint. Every action dimension must be ≥ 0.065 (the minimum over dimensions).
+- **Held-out validation scenes (Gate 0.2):** episode j of 1,000 uses reset seed 900,000 + j, the same 1,000
+  scenes for every policy seed, in the F_geom validation env given to the evaluator. Mean and worst seed are
+  over the 8 policy seeds' success rates.
+- **Housing:** the fixture body's own geoms (cabinet carcass or chest), not the moving part, not the floor.
+  F_house is the total normal force between arm geoms (links, plate) and housing geoms, averaged over each
+  control step's 20 physics substeps, as the env averages its own contact forces.
+- **Sustained housing collision (Gate 0.3, measured on the validation scenes):** an episode with ≥ 5
+  consecutive control steps of F_house > 10 N. The rate is the share of episodes, pooled over seeds.
+- **Stages for a policy** (it has no explicit stages): Stage 1 = control steps before the first forearm
+  contact with the moving part (links 4–6, force > 0); Stage 2 = from that step on. Stage-1 housing collision =
+  a sustained housing collision that starts in Stage 1. The script's stages (standoff-based, §12) are not used
+  here, so PPO and S_script are measured the same way.
+- **Stage-2 wedge:** a timeout that reached Stage 2, with forearm–moving part contact on ≥ 80% of the last 25
+  control steps and < 0.02 normalised progress over them (the stage_audit.py rule).
+- **Obstacle block (Branch C):** a timeout with sustained housing contact (F_house > 0) on ≥ 30% of the last 25
+  steps, no forearm–moving part contact in them, and < 0.02 normalised progress over them.
+- **Contact drift (Branch B):** on the trailing task, lost contact (a timeout that reached Stage 2 with forearm
+  contact on ≤ 20% of the last 25 steps) is the largest failure category among timeouts and spills.
+- **Macro-mean:** the unweighted mean over T0, T1, T2, T4x, T4xneg. Per seed, the mean of that seed's five
+  task rates.
+- **Bootstrap (bar 1.1):** 10,000 hierarchical resamples. Policy seeds are drawn with replacement, then
+  episodes within each seed with replacement, paired with S_script on the same start. The statistic is the
+  macro-mean of the per-episode differences (PPO − S_script). The CI is the 2.5–97.5 percentiles, and the bar needs both the point
+  estimate ≥ +0.030 and the lower bound > 0. Per-task 95% CIs on S_PPO use the same resampling unpaired.
+- **IQR:** 75th minus 25th percentile of the 8 per-seed rates.
+- **Tray safety (bar 1.6):** spill = the env's spill termination. "Mean across the 5 tasks" = the mean of the
+  five 8-seed mean spill rates.
+- **Phase 2:** S_state is the Phase-1 policy's macro-mean from the saved Phase-1 summary, and S_visual the
+  visual policy's macro-mean on the same starts. Bar 2.1: S_visual ≥ 0.92 × S_state. Bar 2.2: S_visual ≥ 0.800.
+  For reference, the direct oracle script's v2 macro is 0.784 (§12, direct: T0 0.815, T1 0.864, T2 0.633,
+  T4x 0.863, T4xneg 0.743).
+
+### 13.4 Points to confirm (raised when writing, not resolved)
+1. "Housing" is read as the cabinet or chest carcass. If it meant the arm's elbow motor housing (log.md
+   2026-11-13), Gate 0.3 measures something else.
+2. Bar 1.4: S_script on T2 is 0.840, so "≥ S_script − 0.020" (≥ 0.820) is always implied by "≥ 0.840". The binding condition is ≥ 0.840.
+3. The branches don't cover every outcome. Gate 0 failing, or Phase 1 failing in ways that match neither B nor
+   C, has no branch. Several branches can also hold at once. The evaluator prints every branch whose
+   condition holds, or "none".
+4. Gate 0.3 is measured on the F_geom validation scenes. Bars 1.2–1.3 measure Stage-1 housing collisions on
+   T0 and T4xneg in the OOD set.
+5. Pairing assumes the F_geom policies' observations can be built for T0–T4xneg by TaskEnv with the
+   training env's kwargs, as eval_policy.py does now. If F_geom adds inputs TaskEnv cannot produce for those
+   tasks, the evaluator stops with an error rather than guessing.
+
+## 14. W1: GPU PPO in MuJoCo Warp, scored in C MuJoCo (2026-11-28; seeds 1–2 pending)
+
+**Setup** (pre-registered in log.md, "Warp run W1", before launch). G3's task, observation (46), reward and
+64-64 tanh policy, trained on family F in the batched MuJoCo Warp env (`wam/warp_env.py`, §12 physics on MuJoCo
+4.0.1, reach distance approximated). Training settings:
+- 4,096 worlds × 32 steps per update, 4 minibatches, 5 epochs;
+- entropy coefficient 0.01, learning rate 3e-4 annealed;
+- 200M steps per seed, seeds 1–3, about 33,000 steps/s on a shared RTX A6000.
+
+Every reported number is evaluated in C MuJoCo 3.3.7 on frozen v2 (`eval_policy.py --exp w1`, mean action,
+200 episodes per task, the usual starts).
+
+**What differs from G3** (CPU, 20M steps): about 10× the samples, 4,096 parallel worlds, the exploration
+settings, and the simulator used for training. The network, observation, reward and the 4+3 controller split
+are unchanged.
+
+**Results so far**
+
+| Task | seed 3, final (200M) | seed 1 (95M, interim) | seed 3 (147M, interim) | staged2 (§12) | G3 (§10–12) |
+|---|---|---|---|---|---|
+| F (training family) | **0.950** | 0.935 | 0.955 | 0.761 | 0.31–0.74 (4 seeds) |
+| T1 sliding door | **0.985** | 0.980 | 0.995 | 0.879 | — |
+| T2 drawer, held out | **0.950** | 0.900 | 0.950 | 0.840 | 0.563 |
+| T4x box | **0.995** | 0.985 | 1.000 | 0.907 | — |
+| T4xneg box | **0.990** | 0.925 | 0.995 | 0.873 | — |
+| T0 hinged door | 0.050 | 0.110 | 0.050 | 0.710 | — |
+
+- **Seed 3 final:**
+  - Spill ≤ 5% and timeout ≤ 1.5% on every sliding task.
+  - T0: 0.485 spill, 0.465 timeout.
+  - Warp training success over its last ~1M steps was 0.970, against 0.950 for F in C. The train/evaluate gap is 0.02.
+- **Hinge:** family F has only slide joints, so T0 is outside the training distribution in kind. This is a
+  scope limit, not a regression.
+- **Action std:** it grew to 5.9 / 4.75 / 8.7 / 10.1 by the end of training. The entropy bonus inflates the
+  noise around a clipped action at no cost to the policy. Evaluation uses the mean action, so the scores stand,
+  but prediction W1-P1 (std ≥ 0.065) is met trivially and no longer measures healthy exploration. Later runs
+  should use a squashed or capped policy.
+- **Two crashes on the way:**
+  - Seeds 1–2 hit NaN at 95M and 48M steps, from a diverged world's NaN observation. Non-finite worlds are now
+    reset (e9de79d).
+  - Their first resume failed on a GPU-only RNG-state bug (2cd4628).
+  - They continue from clean checkpoints at iterations 725 and 350.
+
+**Pending:** seeds 1–2 final, then the four pre-registered predictions scored across seeds (W1-P1 std,
+W1-P2 F ≥ 0.80, W1-P3 T2 ≥ 0.70, W1-P4 Warp-vs-C within 0.10).
+
+**What this shows so far (one final seed plus two interim checkpoints):**
+- With scale and exploration fixed, the same RL setup that reached 0.563 on held-out T2 now reaches 0.90–0.95.
+- It beats the training-free geometric controller staged2 on all five sliding tasks, held-out T2 included.
+
+**What it does not show:**
+- Hinge transfer.
+- Behaviour on hardware.
+- Whether the gain comes from scale, from exploration, or from both. Separating those needs the CPU exploration
+  test (log.md), or a Warp run with G3's original settings.
