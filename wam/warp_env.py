@@ -352,16 +352,23 @@ class WarpFamilyEnv:
         earned = (self.valid_closing / (self.start_distance - distance).clamp(min=1e-9)).clamp(max=1.0)
         spill = ~success & self._spilled()
         reward = reward + success * SUCCESS_BONUS * earned - spill * SPILL_PENALTY
+        # A world whose physics diverged (non-finite state; seen after long runs with "solver iterations limit" warnings)
+        # would poison the trainer's observation normalisation and then the policy, so it ends now with zero reward and
+        # restarts from the pool. Counted in info["nonfinite"].
+        nonfinite = ~(torch.isfinite(self.qpos).all(1) & torch.isfinite(self.qvel).all(1) & torch.isfinite(reward))
+        reward = torch.where(nonfinite, torch.zeros_like(reward), reward)
+        success, spill = success & ~nonfinite, spill & ~nonfinite
         self.last_action = full_action
         self.steps += 1
-        terminated = success | spill
+        terminated = success | spill | nonfinite
         truncated = ~terminated & (self.steps >= EPISODE_STEPS)
         valid_fraction = torch.where(self.closing > 1e-6, self.valid_closing / self.closing.clamp(min=1e-9), torch.zeros_like(self.closing))
-        info = {"success": success, "spill": spill, "timeout": truncated, "valid_fraction": valid_fraction,
+        info = {"success": success, "spill": spill, "timeout": truncated, "nonfinite": nonfinite, "valid_fraction": valid_fraction,
                 "distance_norm": distance / self.range, "forces": forces}
         done = terminated | truncated
         obs = self._obs()  # before any reset: same (start-of-last-substep) kinematics as C's observation
         if done.any():
             self.reset_worlds(done)  # recomputes kinematics in every world, so only the reset rows are replaced
             obs = torch.where(done[:, None], self._obs(), obs)
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)  # belt and braces: a reset world is finite again
         return obs, reward, terminated, truncated, info

@@ -160,7 +160,7 @@ def main():
     log = csv.writer(progress)
     if new_log:
         log.writerow(["iteration", "global_step", "sps", "episodes", "success", "spill", "timeout", "valid_fraction",
-                      "action_std_min", "action_std_mean", "entropy", "approx_kl", "value_loss", "policy_loss"])
+                      "action_std_min", "action_std_mean", "entropy", "approx_kl", "value_loss", "policy_loss", "nonfinite"])
     start, start_step = time.time(), global_step
 
     def save():
@@ -179,7 +179,7 @@ def main():
     for it in range(first, iterations + 1):
         for g in optimizer.param_groups:
             g["lr"] = (1.0 - (it - 1.0) / iterations) * args.learning_rate
-        ended = {"n": 0, "success": 0.0, "spill": 0.0, "timeout": 0.0, "valid": 0.0}
+        ended = {"n": 0, "success": 0.0, "spill": 0.0, "timeout": 0.0, "valid": 0.0, "nonfinite": 0}
         for step in range(T):
             global_step += N
             obs_buf[step], done_buf[step] = next_obs, next_done
@@ -195,6 +195,7 @@ def main():
                 for k, key in (("success", "success"), ("spill", "spill"), ("timeout", "timeout")):
                     ended[k] += float(info[key][done].float().sum())
                 ended["valid"] += float(info["valid_fraction"][done & info["success"]].sum())
+                ended["nonfinite"] += int(info["nonfinite"].sum())
 
         with torch.no_grad():
             next_value = agent.get_value(next_obs).flatten()
@@ -236,11 +237,11 @@ def main():
         n = max(ended["n"], 1)
         row = [it, global_step, sps, ended["n"], ended["success"] / n, ended["spill"] / n, ended["timeout"] / n,
                ended["valid"] / max(ended["success"], 1), float(std.min()), float(std.mean()), float(entropy.mean().detach()),
-               float(approx_kl), float(v_loss), float(pg_loss)]
+               float(approx_kl), float(v_loss), float(pg_loss), ended["nonfinite"]]
         log.writerow(row)
         if it % 10 == 0 or it == iterations:
             print(f"it {it}/{iterations} step {global_step:,} sps {sps:,} | episodes {ended['n']} success {row[4]:.3f} "
-                  f"spill {row[5]:.3f} timeout {row[6]:.3f} | std min {row[8]:.3f} | kl {row[11]:.4f}", flush=True)
+                  f"spill {row[5]:.3f} timeout {row[6]:.3f} | std min {row[8]:.3f} | kl {row[11]:.4f} | nonfinite {ended['nonfinite']}", flush=True)
         progress.flush()
         if args.save_every and it % args.save_every == 0:
             checkpoint(it)
