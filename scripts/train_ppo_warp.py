@@ -149,9 +149,10 @@ def main():
         obs_rms.mean, obs_rms.var, obs_rms.count = c["obs_rms"]
         ret_rms.mean, ret_rms.var, ret_rms.count = c["ret_rms"]
         global_step, first = c["global_step"], c["iteration"] + 1
-        torch.set_rng_state(c["rng"]), env.gen.set_state(c["env_rng"])
+        # RNG states must be CPU ByteTensors; map_location moved them to the device.
+        torch.set_rng_state(c["rng"].cpu()), env.gen.set_state(c["env_rng"].cpu())
         if device.type == "cuda":
-            torch.cuda.set_rng_state(c["cuda_rng"])
+            torch.cuda.set_rng_state(c["cuda_rng"].cpu())
         print(f"resumed from iteration {c['iteration']} ({global_step:,} steps)", flush=True)
     next_obs = normalize(env.reset())
     next_done = torch.zeros(N, device=device)
