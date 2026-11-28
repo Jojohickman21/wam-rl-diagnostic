@@ -23,9 +23,8 @@ per-episode rows (success, valid fraction, spill, timeout, final distance, reach
 episode order, to join with runs/diagnostics/t2_failures/start_heights.csv. A 7th column says whether the
 staged approach reached its standoff (always 1 in direct mode).
 
-Hinged movers (T0's door): TaskEnv.contact_target only handles slide joints, so the script pushes
-HINGE_FRACTION of the way from the hinge along the door, on its arm-side face, in the direction that point
-moves as the door closes (recomputed every step, so the push turns with the door).
+Hinged movers (T0's door) use TaskEnv.contact_target's hinge rule: the point 2/3 of the way from the hinge along
+the door, on its arm-side face, moving the way that point moves as the door closes (recomputed every step).
 
 `slew` > 0 limits how much the action may change per control step (every joint, from 0 at episode start). Without
 it the first action jumps from rest to the cap and throws a settled cylinder (2.8% of staged T2 episodes on env v2).
@@ -65,27 +64,13 @@ point = "link5_c2"
 OFFSET = 0.04 + 0.01  # capsule radius + margin; the contact target is already on the surface
 slew = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
 STANDOFF, AT_STANDOFF = 0.15, 0.03  # m in front of the face; how close counts as there
-HINGE_FRACTION = 2 / 3
 
 u = TaskEnv(task=task, cabinet_spread=(0.1, np.radians(20.0)), conditioning="contact")
 env = gym.wrappers.TimeLimit(u, 250)
 geom = u.model.geom(point).id
-hinge = u.model.jnt_type[u.joint_ids[0]] == mujoco.mjtJoint.mjJNT_HINGE
-if hinge:
-    door = u.mover_geoms[0]
-    half = u.model.geom_size[door]
-    local = u.model.geom_pos[door] + np.array([(2 * HINGE_FRACTION - 1) * half[0], 0.0, 0.0]) + half[1] * np.array(u.outward_local)
-
-
 def target_and_direction():
-    """Point to push and the direction it moves toward the goal."""
-    if not hinge:
-        return u.contact_target()
-    rot = u.data.xmat[u.mover_body].reshape(3, 3)
-    point_world = u.data.xpos[u.mover_body] + rot @ local
-    joint = u.joint_ids[0]
-    moving = np.cross(u.data.xaxis[joint], point_world - u.data.xanchor[joint]) * np.sign(u.goal[0] - u.data.qpos[u.qpos_adr[0]])
-    return point_world, moving / max(np.linalg.norm(moving), 1e-9)
+    """Point to push and the direction it moves toward the goal (TaskEnv's rule; hinges use the door push point)."""
+    return u.contact_target()
 
 trace_path = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] != "-" else None
 # Frozen 2026-11-27 on F/T0/T1 only (log.md): loss 0.03, stall 0.0005, no steering. Steering toward the target point

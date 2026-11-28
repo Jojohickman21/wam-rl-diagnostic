@@ -1485,7 +1485,8 @@ are unchanged.
 | T2 drawer, held out | 0.955 | 0.965 | 0.950 | **0.957** (0.950–0.965) | 3.5% | 0.840 | 0.563 |
 | T4x box | 0.980 | 0.990 | 0.995 | **0.988** (0.980–0.995) | 1.0% | 0.907 | — |
 | T4xneg box | 0.945 | 0.975 | 0.990 | **0.970** (0.945–0.990) | 3.0% | 0.873 | — |
-| T0 hinged door | 0.025 | 0.290 | 0.050 | 0.122 (0.025–0.290) | 38.8% | 0.710 | — |
+| T0 hinged door, as first evaluated (broken hinge observation, see below) | 0.025 | 0.290 | 0.050 | 0.122 (0.025–0.290) | 38.8% | 0.710 | — |
+| **T0 hinged door, corrected observation** | 0.670 | 0.855 | 0.635 | **0.720** (0.635–0.855) | 8.0% | 0.688 | — |
 
 **Pre-registered predictions**
 - **W1-P1** (final action std ≥ 0.065 on 3/3 seeds): met (minimum per seed 4.74–4.81), but trivially. The entropy
@@ -1503,8 +1504,21 @@ are unchanged.
   seed ranges.
 - T2's object (drawer and chest) and its push directions (10–50°) never appear in training.
 
+**Correction (2026-11-28): hinge observation bug.** Until commit after 4de2ab0, TaskEnv.push_direction returned the
+hinge *axis* (vertical) for hinged movers, so on T0 the contact-target features (vector to the push point, push
+direction) were meaningless for every policy that uses them (G2, G3, W1). Fixed: the push point sits 2/3 of the way
+out on the door's arm-side face and moves along its arc toward closing, the rule scripted_baseline.py had validated.
+Slide tasks are unchanged (97 tests pass, staged2 T2 reproduces). With the fix, W1, trained only on sliding boxes,
+scores **0.720 on T0** (0.635–0.855), against 0.122 before. So most of the apparent hinge failure was the broken
+input, not the hinge being out of distribution.
+
+The same audit found the scripted baseline's own hinge copy computed the push point before the first reset, when
+outward_local was still zeros, so it aimed 9 mm inside the face. Corrected staged2 on T0: **0.688** (0.655–0.720),
+against 0.710 stored in §12.4. The script now uses TaskEnv's rule.
+
 **What it does not show**
-- **Hinge transfer.** T0 is 0.122 because family F has only slide joints. That is a scope limit, not a regression.
+- **Hinge transfer, established.** T0 at 0.720 on 3 seeds, zero-shot from slide-only training, is above staged2
+  (0.688) on the mean, but the seed ranges overlap (0.635–0.855 vs 0.655–0.720). A hinge was never in training.
 - **Why it works.** Whether the gain comes from scale, from exploration, or from both. The CPU exploration test
   (log.md) and a Warp run with G3's original settings would separate them.
 - **Hardware.** No hardware result, and the policy still uses oracle contact targets.

@@ -35,7 +35,8 @@ DOOR_RANGE = 1.2  # rad; W_PROGRESS is per rad of door, so a task's progress wei
 SLOTS = 2
 CONTACT_SIZE = 8  # target surface point minus forearm point (3), push direction (3), d/range, ḋ/range
 FK_SIZE = 9  # elbow (link 4 origin), forearm (link5_c2 centre), wrist (link 6 origin), world frame
-MAX_START_TRIES = 1000  # arm draws per fixture pose before the pose is redrawn
+MAX_START_TRIES = 1000
+HINGE_FRACTION = 2 / 3  # where along a hinged door the push point sits (0 hinge, 1 free edge)  # arm draws per fixture pose before the pose is redrawn
 SLOT_SIZE = 13
 LABEL_SLOT = (0, 9, 10, 11, 12)  # valid, s, ṡ, s*, range: the slot without the joint's geometry
 
@@ -316,17 +317,37 @@ class TaskEnv(CloseCabinetEnv):
             ])
         return slots.ravel()
 
+    def _hinged(self):
+        return self.model.jnt_type[self.joint_ids[0]] == mujoco.mjtJoint.mjJNT_HINGE
+
+    def _hinge_point(self):
+        """Hinged mover (one door geom on one hinge): the point HINGE_FRACTION of the way out along the door, on its
+        arm-side face, in the world frame (the push point scripts/scripted_baseline.py validated on T0)."""
+        door = self.mover_geoms[0]
+        half = self.model.geom_size[door]
+        local = (self.model.geom_pos[door] + np.array([(2 * HINGE_FRACTION - 1) * half[0], 0.0, 0.0])
+                 + half[1] * np.asarray(self.outward_local))
+        return self.data.xpos[self.mover_body] + self.data.xmat[self.mover_body].reshape(3, 3) @ local
+
     def push_direction(self):
-        """World direction the mover moves when its joints move toward the goal (slide joints)."""
+        """World direction the push point moves when the mover moves toward the goal. Slide joints: along the
+        joint axes. Hinge (2026-11-28; before this it returned the hinge axis, so T0's contact features were
+        meaningless): tangent to the push point's arc, toward closing."""
         toward = self.goal - self.data.qpos[self.qpos_adr]
-        world = sum(toward[i] * self.data.xaxis[j] for i, j in enumerate(self.joint_ids))
+        if self._hinged():
+            joint = self.joint_ids[0]
+            world = np.cross(self.data.xaxis[joint], self._hinge_point() - self.data.xanchor[joint]) * np.sign(toward[0])
+        else:
+            world = sum(toward[i] * self.data.xaxis[j] for i, j in enumerate(self.joint_ids))
         norm = np.linalg.norm(world)
         return world / norm if norm > 1e-9 else np.zeros(3)
 
     def contact_target(self):
-        """The surface point to push: where a ray along the push direction, started 0.4 m behind the
-        mover's origin, first meets one of the mover's geoms. Same rule for every task."""
+        """The surface point to push. Slide joints: where a ray along the push direction, started 0.4 m behind the
+        mover's origin, first meets one of the mover's geoms. Hinge: the push point on the door's arm-side face."""
         direction = self.push_direction()
+        if self._hinged():
+            return self._hinge_point(), direction
         start = self.data.xpos[self.mover_body] - 0.4 * direction
         best = np.inf
         for g in self.mover_geoms:
