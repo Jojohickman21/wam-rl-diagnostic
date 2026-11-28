@@ -1,7 +1,7 @@
-"""Batched MuJoCo Warp version of TaskEnv's training family F with the G3 setup (log.md 2026-11-28).
+"""Batched MuJoCo Warp version of TaskEnv's training families with the G3 setup (log.md 2026-11-28).
 
 N worlds step on one device. Physics is MuJoCo Warp (MuJoCo >= 4); everything around it is batched torch on zero-copy
-views of the Warp arrays, written to match TaskEnv(task="F", conditioning="contact_fk") with its defaults: the A20
+views of the Warp arrays, written to match TaskEnv(task, conditioning="contact_fk") with its defaults: the A20
 wrist leveler on joints 5-7, the dense gated reward with the energy term, the tray object and spill, 250-step episodes.
 
 Differences from the C env, all deliberate:
@@ -9,7 +9,8 @@ Differences from the C env, all deliberate:
   250 ms settle), sampled with replacement, instead of a fresh draw per episode.
 - The reach term's forearm-to-object distance is approximated: REACH_POINTS points along each allowed capsule
   (links 4-6), distance to the box minus the capsule radius (Josiah's option (a); C uses mj_geomDistance).
-- Only family F is supported (one box on one slide joint). Policies are evaluated in C MuJoCo, not here.
+- Supported tasks: one box-shaped mover on one joint -- family F (slide) and family H (hinged door). Each episode's
+  family geometry (sizes, positions, the hinge axis) is a per-world model field. Policies are evaluated in C MuJoCo.
 
 Training only: evaluation of reported policies stays in C MuJoCo on frozen v2 (sim-backend decision, log.md).
 """
@@ -27,7 +28,7 @@ from wam.close_cabinet import (
     ACTION_SCALE, CONTACT_GROUPS, F_MAX, F_MIN, FRAME_SKIP, MAX_LEAD, OBJECT_HALF_HEIGHT, PLATE_HALF_THICKNESS,
     PLATE_RADIUS, REACH_SCALE, SPILL_PENALTY, SUCCESS_BONUS, TILT_MAX, W_ENERGY, W_FORCE, W_PROGRESS, W_REACH, W_WRONG,
 )
-from wam.tasks import DOOR_RANGE, TaskEnv
+from wam.tasks import DOOR_RANGE, HINGE_FRACTION, TaskEnv
 
 # Warp's EPA horizon buffer (24 edges) overflows on ~5% of worlds with the cylinder tray contacts, which can corrupt
 # contact depth (scripts/warp/bench_physics.py). The kernel bounds by the array's size, so allocate it larger.
@@ -35,7 +36,7 @@ collision_convex.MJ_MAX_EPAHORIZON = 64
 EPISODE_STEPS = 250
 REACH_POINTS = 5
 LEVELER_ITERATIONS = 3
-BATCHED = ("body_pos", "body_quat", "geom_friction", "geom_size", "geom_rbound", "geom_aabb")
+BATCHED = ("body_pos", "body_quat", "geom_friction", "geom_size", "geom_pos", "geom_rbound", "geom_aabb", "jnt_axis")
 
 
 @wp.kernel
@@ -62,13 +63,14 @@ def _accumulate_forces(nacon: wp.array(dtype=int), geom: wp.array(dtype=wp.vec2i
         wp.atomic_add(out, worldid[i], column, force[i][0])
 
 
-POOL_KEYS = ("qpos", "qvel", "q_target", "goal", "fixture_pos", "fixture_quat", "friction", "box_size", "box_rbound",
-             "box_aabb")
+POOL_KEYS = ("qpos", "qvel", "q_target", "goal", "fixture_pos", "fixture_quat", "friction", "geom_size", "geom_pos",
+             "geom_rbound", "geom_aabb", "jnt_axis")
 
 
 def _draw_starts(args):
-    seeds = args
-    env = TaskEnv(task="F", conditioning="contact_fk")
+    task, seeds = args
+    env = TaskEnv(task=task, conditioning="contact_fk")
+    g, j = env.family_geoms, env.joint_ids[0]
     rows = {k: [] for k in POOL_KEYS}
     for s in seeds:
         env.reset(seed=int(s))
@@ -78,24 +80,30 @@ def _draw_starts(args):
         rows["fixture_pos"].append(m.body_pos[env.fixture_body].copy())
         rows["fixture_quat"].append(m.body_quat[env.fixture_body].copy())
         rows["friction"].append(m.geom_friction[env.object_geom].copy())
-        rows["box_size"].append(m.geom_size[env.box_geom].copy())
-        rows["box_rbound"].append(m.geom_rbound[env.box_geom])
-        rows["box_aabb"].append(m.geom_aabb[env.box_geom].reshape(2, 3).copy())
+        rows["geom_size"].append(m.geom_size[g].copy()), rows["geom_pos"].append(m.geom_pos[g].copy())
+        rows["geom_rbound"].append(m.geom_rbound[g].copy()), rows["geom_aabb"].append(m.geom_aabb[g].reshape(-1, 2, 3).copy())
+        rows["jnt_axis"].append(m.jnt_axis[j].copy())
     return {k: np.array(v) for k, v in rows.items()}
 
 
-def start_pool(n, seed, path=None, workers=1):
-    """n starts drawn by the C env (TaskEnv F, G3 kwargs), start i with reset seed `seed + i`: the state after reset
-    and the per-episode model values. Split over `workers` processes with the same result. Cached at `path`."""
+def start_pool(n, seed, path=None, workers=1, task="F"):
+    """n starts drawn by the C env (TaskEnv `task`, G3 kwargs), start i with reset seed `seed + i`: the state after
+    reset and the per-episode model values. Split over `workers` processes with the same result. Cached at `path`."""
     if path is not None and Path(path).exists():
-        return dict(np.load(path))
+        pool = dict(np.load(path))
+        if "box_size" in pool:  # pre-H format (F only: one family geom, the slide axis of task_box_x.xml)
+            pool["geom_size"], pool["geom_rbound"] = pool.pop("box_size")[:, None], pool.pop("box_rbound")[:, None]
+            pool["geom_aabb"] = pool.pop("box_aabb")[:, None]
+            pool["geom_pos"] = np.zeros_like(pool["geom_size"])
+            pool["jnt_axis"] = np.tile([1.0, 0.0, 0.0], (len(pool["qpos"]), 1))
+        return pool
     seeds = np.arange(seed, seed + n)
     if workers > 1:
         import multiprocessing as mp
         with mp.get_context("spawn").Pool(workers) as p:
-            parts = p.map(_draw_starts, np.array_split(seeds, workers))
+            parts = p.map(_draw_starts, [(task, chunk) for chunk in np.array_split(seeds, workers)])
     else:
-        parts = [_draw_starts(seeds)]
+        parts = [_draw_starts((task, seeds))]
     pool = {k: np.concatenate([part[k] for part in parts]) for k in POOL_KEYS}
     if path is not None:
         np.savez(path, **pool)
@@ -103,9 +111,9 @@ def start_pool(n, seed, path=None, workers=1):
 
 
 class WarpFamilyEnv:
-    def __init__(self, nworld, pool, device="cuda:0", seed=0, nconmax=48, njmax=256):
-        self.n, self.device = nworld, torch.device(device)
-        c = TaskEnv(task="F", conditioning="contact_fk")
+    def __init__(self, nworld, pool, device="cuda:0", seed=0, nconmax=48, njmax=256, task="F"):
+        self.n, self.device, self.task = nworld, torch.device(device), task
+        c = TaskEnv(task=task, conditioning="contact_fk")
         c.reset(seed=0)
         self.c, m = c, c.model
         self.range, self.tol = c.spec_["range"], c.spec_["tol"]
@@ -123,7 +131,7 @@ class WarpFamilyEnv:
         t = wp.to_torch
         d, ik, mw = self.d, self.ik, self.m
         self.qpos, self.qvel, self.ctrl = t(d.qpos), t(d.qvel), t(d.ctrl)
-        self.xpos, self.xmat, self.xaxis = t(d.xpos), t(d.xmat), t(d.xaxis)
+        self.xpos, self.xmat, self.xaxis, self.xanchor = t(d.xpos), t(d.xmat), t(d.xaxis), t(d.xanchor)
         self.geom_xpos, self.geom_xmat, self.qfrc_actuator = t(d.geom_xpos), t(d.geom_xmat), t(d.qfrc_actuator)
         self.qacc_warmstart, self.act = t(d.qacc_warmstart), t(d.act) if d.act.shape[-1] else None
         self.con_geom, self.con_world, self.nacon = t(d.contact.geom), t(d.contact.worldid), t(d.nacon)
@@ -132,6 +140,7 @@ class WarpFamilyEnv:
         self.force_sum_t = t(self.force_sum)
         self.body_pos, self.body_quat, self.geom_friction = t(mw.body_pos), t(mw.body_quat), t(mw.geom_friction)
         self.geom_size, self.geom_rbound, self.geom_aabb = t(mw.geom_size), t(mw.geom_rbound), t(mw.geom_aabb)
+        self.geom_pos, self.jnt_axis = t(mw.geom_pos), t(mw.jnt_axis)
 
         dev, f32 = self.device, torch.float32
         as_t = lambda x, dtype=f32: torch.as_tensor(np.asarray(x), dtype=dtype, device=dev)
@@ -143,11 +152,19 @@ class WarpFamilyEnv:
         mover = torch.zeros(m.ngeom, dtype=torch.bool, device=dev)
         mover[list(c.mover_geoms)] = True
         self.mover_geom = mover
-        self.ids = dict(link7=c.link7, plate=c.plate_geom, obj=c.object_geom, box=c.box_geom, fixture=c.fixture_body,
+        self.ids = dict(link7=c.link7, plate=c.plate_geom, obj=c.object_geom, box=c.mover_geoms[0], fixture=c.fixture_body,
                         mover=c.mover_body, forearm=c.forearm_geom, link4=c.fk_bodies[0], link6=c.fk_bodies[1],
-                        slide_q=int(c.qpos_adr[0]), slide_v=int(c.qvel_adr[0]), slide_j=int(c.joint_ids[0]),
+                        task_q=int(c.qpos_adr[0]), task_v=int(c.qvel_adr[0]), task_j=int(c.joint_ids[0]),
                         obj_q=int(c.object_qpos))
-        assert [m.geom_type[g] for g in c.mover_geoms] == [mujoco.mjtGeom.mjGEOM_BOX], "family F mover must be one box"
+        assert [m.geom_type[g] for g in c.mover_geoms] == [mujoco.mjtGeom.mjGEOM_BOX], "the mover must be one box"
+        self.family_geoms = as_t(c.family_geoms, torch.long)
+        # Warp places geoms of bodies welded to the world once, at put_data, and never again; a family that moves the
+        # fixture or resizes its geoms (H's carcass) must place them itself after every per-world change.
+        static = [g for g in c.family_geoms if m.geom_bodyid[g] == c.fixture_body]
+        assert all(np.allclose(m.geom_quat[g], (1, 0, 0, 0)) for g in static), "static family geoms must be unrotated"
+        self.static_geoms = as_t(static, torch.long)
+        self.hinged = bool(c._hinged())
+        self.outward_local = as_t(c.spec_["outward"] if c.spec_["outward"] is not None else (0.0, 0.0, 0.0))
         caps = list(c.allowed_capsules)
         self.caps = as_t(caps, torch.long)
         self.cap_radius, self.cap_half = as_t(m.geom_size[caps, 0]), as_t(m.geom_size[caps, 1])
@@ -160,8 +177,10 @@ class WarpFamilyEnv:
         # the process (the trainer's torch work included) and Warp shares it.
         self.stream = None
         if dev.type == "cuda":
-            torch_stream = torch.cuda.Stream(dev)
-            torch.cuda.set_stream(torch_stream)
+            torch_stream = torch.cuda.current_stream(dev)
+            if torch_stream == torch.cuda.default_stream(dev):  # the first env in the process creates it; later ones share
+                torch_stream = torch.cuda.Stream(dev)
+                torch.cuda.set_stream(torch_stream)
             self.stream = wp.stream_from_torch(torch_stream)
         with wp.ScopedDevice(device), wp.ScopedStream(self.stream) if self.stream else _null():
             with wp.ScopedCapture() as capture:
@@ -187,19 +206,36 @@ class WarpFamilyEnv:
         return torch.arccos(self.xmat[:, self.ids["link7"], 2, 1].abs().clamp(0.0, 1.0))
 
     def _distance(self):
-        return (self.qpos[:, self.ids["slide_q"]] - self.goal).abs()
+        return (self.qpos[:, self.ids["task_q"]] - self.goal).abs()
+
+    def _hinge_point(self):
+        """TaskEnv._hinge_point: HINGE_FRACTION of the way along the door from the hinge, on its arm-side face."""
+        b, mover = self.ids["box"], self.ids["mover"]
+        pos, half = self.geom_pos[:, b], self.geom_size[:, b]
+        along = torch.where(pos[:, 0] < 0, -1.0, 1.0)
+        local = pos.clone()
+        local[:, 0] += along * (2 * HINGE_FRACTION - 1) * half[:, 0]
+        local += half[:, 1:2] * self.outward_local
+        return self.xpos[:, mover] + (self.xmat[:, mover] @ local[..., None])[..., 0]
 
     def _push_direction(self):
-        toward = self.goal - self.qpos[:, self.ids["slide_q"]]
-        return torch.sign(toward)[:, None] * self.xaxis[:, self.ids["slide_j"]]
+        toward = self.goal - self.qpos[:, self.ids["task_q"]]
+        if self.hinged:
+            j = self.ids["task_j"]
+            world = torch.cross(self.xaxis[:, j], self._hinge_point() - self.xanchor[:, j], dim=1) * torch.sign(toward)[:, None]
+            return world / world.norm(dim=1, keepdim=True).clamp(min=1e-9)
+        return torch.sign(toward)[:, None] * self.xaxis[:, self.ids["task_j"]]
 
     def _box(self):
         b = self.ids["box"]
         return self.geom_xpos[:, b], self.geom_xmat[:, b], self.geom_size[:, b]
 
     def _contact_target(self):
-        """Where a ray along the push direction, started 0.4 m behind the mover, first meets the box (slab test)."""
+        """Slide: where a ray along the push direction, started 0.4 m behind the mover, first meets the box (slab
+        test). Hinge: the door push point (TaskEnv.contact_target)."""
         direction = self._push_direction()
+        if self.hinged:
+            return self._hinge_point(), direction
         start = self.xpos[:, self.ids["mover"]] - 0.4 * direction
         center, rot, half = self._box()
         o = ((start - center)[:, None, :] @ rot)[:, 0]
@@ -235,7 +271,7 @@ class WarpFamilyEnv:
         q, qvel = self.qpos[:, :7], self.qvel[:, :7]
         target, direction = self._contact_target()
         dist = self._distance()
-        s, sv = self.qpos[:, self.ids["slide_q"]], self.qvel[:, self.ids["slide_v"]]
+        s, sv = self.qpos[:, self.ids["task_q"]], self.qvel[:, self.ids["task_v"]]
         speed = -(sv * (self.goal - s)) / dist.clamp(min=1e-9)
         contact = torch.cat([target - self.geom_xpos[:, self.ids["forearm"]], direction,
                              (dist / self.range)[:, None], (speed / self.range)[:, None]], 1)
@@ -248,6 +284,16 @@ class WarpFamilyEnv:
     def _kinematics(self):
         mjw.kinematics(self.m, self.d)
         mjw.com_pos(self.m, self.d)
+        if len(self.static_geoms):
+            f = self.ids["fixture"]
+            q = self.body_quat[:, f]
+            w, x, y, z = q.unbind(1)
+            rot = torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+                               2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+                               2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], 1).view(-1, 3, 3)
+            g = self.static_geoms
+            self.geom_xpos[:, g] = self.body_pos[:, f, None] + (rot[:, None] @ self.geom_pos[:, g, :, None])[..., 0]
+            self.geom_xmat[:, g] = rot[:, None]
 
     def reset_worlds(self, mask):
         idx = mask.nonzero(as_tuple=True)[0]
@@ -261,10 +307,13 @@ class WarpFamilyEnv:
             self.act[idx] = 0.0
         self.q_target[idx], self.goal[idx] = p["q_target"], p["goal"][:, 0]
         self.ctrl[idx] = p["q_target"]
-        f, o, b = self.ids["fixture"], self.ids["obj"], self.ids["box"]
+        f, o, g = self.ids["fixture"], self.ids["obj"], self.family_geoms
         self.body_pos[idx, f], self.body_quat[idx, f] = p["fixture_pos"], p["fixture_quat"]
         self.geom_friction[idx, o] = p["friction"]
-        self.geom_size[idx, b], self.geom_rbound[idx, b], self.geom_aabb[idx, b] = p["box_size"], p["box_rbound"], p["box_aabb"]
+        rows = idx[:, None]
+        self.geom_size[rows, g], self.geom_pos[rows, g] = p["geom_size"], p["geom_pos"]
+        self.geom_rbound[rows, g], self.geom_aabb[rows, g] = p["geom_rbound"], p["geom_aabb"]
+        self.jnt_axis[idx, self.ids["task_j"]] = p["jnt_axis"]
         self.last_action[idx], self.steps[idx] = 0.0, 0
         self.closing[idx], self.valid_closing[idx] = 0.0, 0.0
         self._kinematics()
@@ -371,4 +420,24 @@ class WarpFamilyEnv:
             self.reset_worlds(done)  # recomputes kinematics in every world, so only the reset rows are replaced
             obs = torch.where(done[:, None], self._obs(), obs)
         obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)  # belt and braces: a reset world is finite again
+        return obs, reward, terminated, truncated, info
+
+
+class MixedEnv:
+    """Several WarpFamilyEnv (one per task, one model each) stepped as one batch: worlds [0, n_1) are the first env's,
+    and so on. info["task"] gives each world's env index."""
+
+    def __init__(self, envs):
+        self.envs, self.sizes = envs, [e.n for e in envs]
+        self.n = sum(self.sizes)
+        self.task_index = torch.cat([torch.full((e.n,), k, device=e.device) for k, e in enumerate(envs)])
+
+    def reset(self):
+        return torch.cat([e.reset() for e in self.envs])
+
+    def step(self, action):
+        outs = [e.step(a) for e, a in zip(self.envs, action.split(self.sizes))]
+        obs, reward, terminated, truncated = (torch.cat([o[i] for o in outs]) for i in range(4))
+        info = {k: torch.cat([o[4][k] for o in outs]) for k in outs[0][4]}
+        info["task"] = self.task_index
         return obs, reward, terminated, truncated, info

@@ -72,6 +72,13 @@ TASKS = {
               # object and direction.
               family=dict(arcs=((np.radians(-10), np.radians(110), 0.0), (np.radians(210), np.radians(250), 0.9)),
                           held_out=(np.radians(10), np.radians(50)), half_xy=(0.04, 0.07), half_z=(0.10, 0.14))),
+    # Hinged-door family (W2b, log.md 2026-11-28): T0's cabinet, door and arm start reflected across the robot's
+    # sagittal plane (y -> -y: cabinet on the other side, carcass behind at -y, hinge axis +z, the arm pushes from +y),
+    # door half-width and half-height redrawn, the layout turned by beta about the robot base, plus T0's position/yaw
+    # spread. Unreflected doors -- T0 -- never appear.
+    "H": dict(scene="close_cabinet.xml", fixture="cabinet", mover="door", joints=("door_hinge",),
+              start=(1.0, 1.4), goal=("fixed", (0.0,)), range=DOOR_RANGE, tol=0.05, outward=(0, 1, 0),
+              family=dict(kind="hinge", half_w=(0.08, 0.15), half_h=(0.14, 0.22), beta=(np.radians(-25), np.radians(25)))),
     "T4y": dict(scene="task_box_y.xml", fixture="fixture", mover="mover", joints=("slide_y",),
                 start=(0.0, 0.0), goal=("axis", 0.20, 0.30, -1.0), range=0.25, tol=0.02, outward=None),
     "T4xy": dict(scene="task_box_xy.xml", fixture="fixture", mover="mover", joints=("slide_x", "slide_y"),
@@ -170,8 +177,13 @@ class TaskEnv(CloseCabinetEnv):
         size += 6 * self.observe_object
         self.forearm_geom = self.model.geom("link5_c2").id
         self.fk_bodies = [self.model.body(name).id for name in ("link4", "link6")]
-        if "family" in spec_:
+        self.family_geoms = []  # geoms whose size/position a family redraws each episode
+        if spec_.get("family", {}).get("kind") == "hinge":
+            self.door_geom, self.carcass_geom = self.model.geom("door").id, self.model.geom("carcass").id
+            self.family_geoms = [self.door_geom, self.carcass_geom]
+        elif "family" in spec_:
             self.box_geom = self.model.geom("box").id
+            self.family_geoms = [self.box_geom]
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (size,), np.float32)
         self.q_target = self.home[:7].copy()
         self.last_action = np.zeros(7)
@@ -200,14 +212,16 @@ class TaskEnv(CloseCabinetEnv):
             self.np_random.uniform(-shift, shift, 2), 0.0
         )
         home_yaw = self.spec_.get("home_yaw", 0.0)
-        if "family" in self.spec_:  # drawn only for the family, so every fixed task's sequence is unchanged
+        home = self.home[:7].copy()
+        if self.spec_.get("family", {}).get("kind") == "hinge":
+            home = self._draw_hinge_family()
+        elif "family" in self.spec_:  # drawn only for the family, so every fixed task's sequence is unchanged
             azimuth, home_yaw = self._draw_family()
             self.cabinet_yaw = azimuth - self.fixture_yaw0
         mujoco.mju_axisAngle2Quat(self.model.body_quat[self.fixture_body], [0.0, 0.0, 1.0],
                                   self.fixture_yaw0 + self.cabinet_yaw)
         self._draw_goal()
         lo, hi = self.spec_["start"]
-        home = self.home[:7].copy()
         home[0] += home_yaw
         for _ in range(MAX_START_TRIES):
             for adr in self.qpos_adr:
@@ -239,6 +253,28 @@ class TaskEnv(CloseCabinetEnv):
         self.model.geom_rbound[self.box_geom] = np.linalg.norm(half)
         self.model.geom_aabb[self.box_geom] = np.concatenate([np.zeros(3), half])
         return azimuth, home_yaw
+
+    def _draw_hinge_family(self):
+        """Reflected T0 (see TASKS["H"]): new half-width w and half-height h for door and carcass, the cabinet and its
+        yaw reflected in y and turned by beta about the robot base. Returns the start posture to draw around: T0's
+        home reflected (joints about z -- 1, 3, 5, 7 -- change sign) with joint 1 turned by beta."""
+        fam = self.spec_["family"]
+        w, h = self.np_random.uniform(*fam["half_w"]), self.np_random.uniform(*fam["half_h"])
+        beta = self.np_random.uniform(*fam["beta"])
+        m = self.model
+        for geom, size, pos in ((self.door_geom, (w, 0.009, h), (w, 0.0, 0.0)), (self.carcass_geom, (w, 0.15, h), (w, -0.159, 0.0))):
+            m.geom_size[geom], m.geom_pos[geom] = size, pos
+            m.geom_rbound[geom] = np.linalg.norm(size)
+            m.geom_aabb[geom] = np.concatenate([np.zeros(3), size])
+        m.jnt_axis[self.joint_ids[0]] = (0.0, 0.0, 1.0)
+        spread = m.body_pos[self.fixture_body][:2] - self.cabinet_home[:2]
+        x, y = self.cabinet_home[0] + spread[0], -(self.cabinet_home[1] + spread[1])
+        cb, sb = np.cos(beta), np.sin(beta)
+        m.body_pos[self.fixture_body][:2] = (cb * x - sb * y, sb * x + cb * y)
+        self.cabinet_yaw = -(self.fixture_yaw0 + self.cabinet_yaw) - self.fixture_yaw0 + beta
+        home = self.home[:7] * np.array([-1, 1, -1, 1, -1, 1, -1])
+        home[0] += beta
+        return home
 
     def _draw_goal(self):
         """Fixed goals draw nothing, so T0 keeps A20's random sequence."""
@@ -325,7 +361,8 @@ class TaskEnv(CloseCabinetEnv):
         arm-side face, in the world frame (the push point scripts/scripted_baseline.py validated on T0)."""
         door = self.mover_geoms[0]
         half = self.model.geom_size[door]
-        local = (self.model.geom_pos[door] + np.array([(2 * HINGE_FRACTION - 1) * half[0], 0.0, 0.0])
+        along = np.sign(self.model.geom_pos[door][0]) or 1.0  # the door extends along +x or, mirrored, -x from the hinge
+        local = (self.model.geom_pos[door] + np.array([along * (2 * HINGE_FRACTION - 1) * half[0], 0.0, 0.0])
                  + half[1] * np.asarray(self.outward_local))
         return self.data.xpos[self.mover_body] + self.data.xmat[self.mover_body].reshape(3, 3) @ local
 

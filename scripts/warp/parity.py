@@ -4,7 +4,7 @@ The C env (MuJoCo >= 4) runs family F with G3's setup, driven by a trained G3 po
 SNAPSHOT_EVERY-th step the full C state is copied into one Warp world, both take the same action, and the next
 observation, reward terms, contact gate and termination are compared. Runs on the Warp device given.
 
-    python scripts/warp/parity.py [episodes] [policy seed] [device]
+    python scripts/warp/parity.py [episodes] [policy seed] [device] [task]
 """
 import glob
 import sys
@@ -22,6 +22,7 @@ from wam.warp_env import WarpFamilyEnv, start_pool  # noqa: E402
 episodes = int(sys.argv[1]) if len(sys.argv) > 1 else 48
 policy_seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 device = sys.argv[3] if len(sys.argv) > 3 else "cpu"
+task = sys.argv[4] if len(sys.argv) > 4 else "F"
 SNAPSHOT_EVERY = 15
 
 path = glob.glob(f"runs/WamFamilyContactFK-v0__train_ppo__{policy_seed}__*/train_ppo.cleanrl_model")[0]
@@ -33,7 +34,8 @@ w = stats["count"][:, None]
 mean = (w * stats["mean"]).sum(0) / w.sum()
 var = (w * (stats["var"] + (stats["mean"] - mean) ** 2)).sum(0) / w.sum()
 
-c = TaskEnv(task="F", conditioning="contact_fk")
+c = TaskEnv(task=task, conditioning="contact_fk")
+g, j = c.family_geoms, c.joint_ids[0]
 snaps = []
 for e in range(episodes):
     obs, _ = c.reset(seed=20_000 + e)
@@ -47,12 +49,13 @@ for e in range(episodes):
                         last_action=c.last_action.copy(), goal=c.goal.copy(), closing=c.closing, valid=c.valid_closing,
                         start=c.start_distance, link=c.link_distance, fixture_pos=m.body_pos[c.fixture_body].copy(),
                         fixture_quat=m.body_quat[c.fixture_body].copy(), friction=m.geom_friction[c.object_geom].copy(),
-                        box_size=m.geom_size[c.box_geom].copy(), box_rbound=m.geom_rbound[c.box_geom],
-                        box_aabb=m.geom_aabb[c.box_geom].reshape(2, 3).copy(), action=a.copy(), returns=dict(c.returns))
+                        geom_size=m.geom_size[g].copy(), geom_pos=m.geom_pos[g].copy(), geom_rbound=m.geom_rbound[g].copy(),
+                        geom_aabb=m.geom_aabb[g].reshape(-1, 2, 3).copy(), jnt_axis=m.jnt_axis[j].copy(),
+                        action=a.copy(), returns=dict(c.returns))
         obs, r, term, trunc, info = c.step(a)
         if snap is not None:
             f = [info[f"force/door_{g}"] for g in ("upper", "link4", "link5", "link6", "ee")] + [info["force/scene"]]
-            snap.update(ctrl_after=c.data.ctrl.copy(), slide_q_next=c.data.qpos[c.qpos_adr[0]], slide_v_next=c.data.qvel[c.qvel_adr[0]],
+            snap.update(ctrl_after=c.data.ctrl.copy(), task_q_next=c.data.qpos[c.qpos_adr[0]], task_v_next=c.data.qvel[c.qvel_adr[0]],
                         obs_next=obs.copy(), reward=r, reach=c.returns["reach"] - snap["returns"]["reach"],
                         link_next=c.link_distance, gate=sum(f[1:4]) > F_MIN and f[0] + f[4] + f[5] == 0.0,
                         success=bool(info["task/success"]), spill=bool(info["task/spill"]), term=term)
@@ -62,7 +65,7 @@ for e in range(episodes):
 n = len(snaps)
 print(f"{n} snapshot states from {episodes} episodes")
 
-wenv = WarpFamilyEnv(n, start_pool(4, seed=30_000), device=device)
+wenv = WarpFamilyEnv(n, start_pool(4, seed=30_000, task=task), device=device, task=task)
 wenv.reset()
 T = lambda key: torch.as_tensor(np.array([s[key] for s in snaps]), dtype=torch.float32, device=wenv.device)
 wenv.qpos.copy_(T("qpos")), wenv.qvel.copy_(T("qvel")), wenv.qacc_warmstart.copy_(T("warm"))
@@ -72,7 +75,10 @@ wenv.closing, wenv.valid_closing, wenv.start_distance = T("closing"), T("valid")
 ids = wenv.ids
 wenv.body_pos[:, ids["fixture"]], wenv.body_quat[:, ids["fixture"]] = T("fixture_pos"), T("fixture_quat")
 wenv.geom_friction[:, ids["obj"]] = T("friction")
-wenv.geom_size[:, ids["box"]], wenv.geom_rbound[:, ids["box"]], wenv.geom_aabb[:, ids["box"]] = T("box_size"), T("box_rbound"), T("box_aabb")
+fg = wenv.family_geoms
+wenv.geom_size[:, fg], wenv.geom_pos[:, fg] = T("geom_size"), T("geom_pos")
+wenv.geom_rbound[:, fg], wenv.geom_aabb[:, fg] = T("geom_rbound"), T("geom_aabb")
+wenv.jnt_axis[:, ids["task_j"]] = T("jnt_axis")
 wenv._kinematics()
 link_prev_w = wenv._link_distance().clone()
 wenv.link_distance = link_prev_w.clone()
@@ -112,12 +118,16 @@ from wam.close_cabinet import FRAME_SKIP  # noqa: E402
 wenv.qpos.copy_(T("qpos")), wenv.qvel.copy_(T("qvel")), wenv.qacc_warmstart.copy_(T("warm"))
 wenv.body_pos[:, ids["fixture"]], wenv.body_quat[:, ids["fixture"]] = T("fixture_pos"), T("fixture_quat")
 wenv.geom_friction[:, ids["obj"]] = T("friction")
-wenv.geom_size[:, ids["box"]], wenv.geom_rbound[:, ids["box"]], wenv.geom_aabb[:, ids["box"]] = T("box_size"), T("box_rbound"), T("box_aabb")
+fg = wenv.family_geoms
+wenv.geom_size[:, fg], wenv.geom_pos[:, fg] = T("geom_size"), T("geom_pos")
+wenv.geom_rbound[:, fg], wenv.geom_aabb[:, fg] = T("geom_rbound"), T("geom_aabb")
+wenv.jnt_axis[:, ids["task_j"]] = T("jnt_axis")
 wenv.ctrl.copy_(T("ctrl_after"))
+wenv._kinematics()  # places static geoms after the per-world changes
 for _ in range(FRAME_SKIP):
     mjw.step(wenv.m, wenv.d)
-dq = (wenv.qpos[:, ids["slide_q"]] - T("slide_q_next")).abs() / wenv.range
-dv = (wenv.qvel[:, ids["slide_v"]] - T("slide_v_next")).abs() / wenv.range
+dq = (wenv.qpos[:, ids["task_q"]] - T("task_q_next")).abs() / wenv.range
+dv = (wenv.qvel[:, ids["task_v"]] - T("task_v_next")).abs() / wenv.range
 env_dq = d_obs[:, 35]
 print(f"6. physics only, box: normalised distance |Δ| p99 {torch.quantile(dq[live], 0.99).item():.2e} (env run: {torch.quantile(env_dq, 0.99).item():.2e}); "
       f"normalised rate |Δ| p99 {torch.quantile(dv[live], 0.99).item():.2e} (env run: {torch.quantile(d_obs[:, 36], 0.99).item():.2e})")
@@ -130,13 +140,14 @@ cq, cv = [], []
 for s in snaps:
     c.model.body_pos[c.fixture_body], c.model.body_quat[c.fixture_body] = s["fixture_pos"], s["fixture_quat"]
     c.model.geom_friction[c.object_geom] = s["friction"]
-    c.model.geom_size[c.box_geom], c.model.geom_rbound[c.box_geom] = s["box_size"], s["box_rbound"]
-    c.model.geom_aabb[c.box_geom] = s["box_aabb"].ravel()
+    c.model.geom_size[g], c.model.geom_pos[g], c.model.geom_rbound[g] = s["geom_size"], s["geom_pos"], s["geom_rbound"]
+    c.model.geom_aabb[g] = s["geom_aabb"].reshape(len(g), 6)
+    c.model.jnt_axis[j] = s["jnt_axis"]
     mujoco.mj_resetData(c.model, fresh)
     fresh.qpos[:], fresh.qvel[:], fresh.qacc_warmstart[:], fresh.ctrl[:] = s["qpos"], s["qvel"], s["warm"], s["ctrl_after"]
     for _ in range(FRAME_SKIP):
         mujoco.mj_step(c.model, fresh)
     cq.append(fresh.qpos[c.qpos_adr[0]]), cv.append(fresh.qvel[c.qvel_adr[0]])
-cdq = (torch.tensor(cq) - T("slide_q_next").cpu()).abs() / wenv.range
-cdv = (torch.tensor(cv) - T("slide_v_next").cpu()).abs() / wenv.range
+cdq = (torch.tensor(cq) - T("task_q_next").cpu()).abs() / wenv.range
+cdv = (torch.tensor(cv) - T("task_v_next").cpu()).abs() / wenv.range
 print(f"7. C-to-C copy, box: normalised distance |Δ| max {cdq.max().item():.2e}, rate |Δ| max {cdv.max().item():.2e}")

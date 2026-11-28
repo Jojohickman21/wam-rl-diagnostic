@@ -26,7 +26,7 @@ import torch.nn as nn
 from torch.distributions.normal import Normal
 
 sys.path.insert(0, ".")
-from wam.warp_env import WarpFamilyEnv, start_pool  # noqa: E402
+from wam.warp_env import MixedEnv, WarpFamilyEnv, start_pool  # noqa: E402
 
 ENV_ID = "WamFamilyContactFK-v0"  # the C env with the same observation, reward and task, used to evaluate
 
@@ -51,6 +51,7 @@ def parse():
     p.add_argument("--max-std", type=float, default=0.0,
                    help="cap on the policy's action std (0: none). With actions clipped to [-1, 1] the entropy bonus "
                         "otherwise inflates std at no cost (W1 reached 5-10)")
+    p.add_argument("--tasks", default="F", help="comma-separated training families, worlds split evenly (F, H)")
     p.add_argument("--pool-size", type=int, default=20_000)
     p.add_argument("--pool-workers", type=int, default=4, help="processes drawing the start pool (cached per seed)")
     p.add_argument("--device", default="cuda:0")
@@ -115,12 +116,17 @@ def main():
         print(f"{run} already finished", flush=True)
         return
     run.mkdir(parents=True, exist_ok=True)
-    pool_path = Path(f"runs/warp_pool_F_{args.pool_size}_{args.seed}.npz")
-    t0 = time.time()
-    pool = start_pool(args.pool_size, seed=1_000_000 + 100_000 * args.seed, path=pool_path, workers=args.pool_workers)
-    print(f"start pool: {len(pool['qpos'])} starts ({time.time() - t0:.0f} s)", flush=True)
-
-    env = WarpFamilyEnv(args.num_envs, pool, device=args.device, seed=args.seed)
+    tasks = args.tasks.split(",")
+    assert args.num_envs % len(tasks) == 0, "num_envs must split evenly over the tasks"
+    POOL_BASE = {"F": 1_000_000, "H": 2_000_000}  # reset seeds disjoint from evaluation (50,000 + seed chains)
+    envs = []
+    for k, task in enumerate(tasks):
+        t0 = time.time()
+        pool = start_pool(args.pool_size, seed=POOL_BASE[task] + 100_000 * args.seed, workers=args.pool_workers, task=task,
+                          path=Path(f"runs/warp_pool_{task}_{args.pool_size}_{args.seed}.npz"))
+        print(f"start pool {task}: {len(pool['qpos'])} starts ({time.time() - t0:.0f} s)", flush=True)
+        envs.append(WarpFamilyEnv(args.num_envs // len(tasks), pool, device=args.device, seed=args.seed + 1000 * k, task=task))
+    env = envs[0] if len(envs) == 1 else MixedEnv(envs)
     obs_dim, act_dim = 46, 4
     agent = Agent(obs_dim, act_dim, args.hidden, args.max_std or None).to(device)
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -155,7 +161,9 @@ def main():
         ret_rms.mean, ret_rms.var, ret_rms.count = c["ret_rms"]
         global_step, first = c["global_step"], c["iteration"] + 1
         # RNG states must be CPU ByteTensors; map_location moved them to the device.
-        torch.set_rng_state(c["rng"].cpu()), env.gen.set_state(c["env_rng"].cpu())
+        torch.set_rng_state(c["rng"].cpu())
+        for e, state in zip(envs, c["env_rng"] if isinstance(c["env_rng"], list) else [c["env_rng"]]):
+            e.gen.set_state(state.cpu())
         if device.type == "cuda":
             torch.cuda.set_rng_state(c["cuda_rng"].cpu())
         print(f"resumed from iteration {c['iteration']} ({global_step:,} steps)", flush=True)
@@ -166,7 +174,8 @@ def main():
     log = csv.writer(progress)
     if new_log:
         log.writerow(["iteration", "global_step", "sps", "episodes", "success", "spill", "timeout", "valid_fraction",
-                      "action_std_min", "action_std_mean", "entropy", "approx_kl", "value_loss", "policy_loss", "nonfinite"])
+                      "action_std_min", "action_std_mean", "entropy", "approx_kl", "value_loss", "policy_loss", "nonfinite"]
+                     + [f"success_{t}" for t in tasks if len(tasks) > 1])
     start, start_step = time.time(), global_step
 
     def save():
@@ -177,7 +186,7 @@ def main():
     def checkpoint(it):
         state = dict(agent=agent.state_dict(), optimizer=optimizer.state_dict(), iteration=it, global_step=global_step,
                      obs_rms=(obs_rms.mean, obs_rms.var, obs_rms.count), ret_rms=(ret_rms.mean, ret_rms.var, ret_rms.count),
-                     rng=torch.get_rng_state(), env_rng=env.gen.get_state(),
+                     rng=torch.get_rng_state(), env_rng=[e.gen.get_state() for e in envs],
                      cuda_rng=torch.cuda.get_rng_state() if device.type == "cuda" else None)
         torch.save(state, run / "ckpt.tmp")
         os.replace(run / "ckpt.tmp", ckpt)  # atomic: a preemption mid-write leaves the previous checkpoint intact
@@ -185,7 +194,8 @@ def main():
     for it in range(first, iterations + 1):
         for g in optimizer.param_groups:
             g["lr"] = (1.0 - (it - 1.0) / iterations) * args.learning_rate
-        ended = {"n": 0, "success": 0.0, "spill": 0.0, "timeout": 0.0, "valid": 0.0, "nonfinite": 0}
+        ended = {"n": 0, "success": 0.0, "spill": 0.0, "timeout": 0.0, "valid": 0.0, "nonfinite": 0,
+                 "by_task": torch.zeros(len(tasks), 2, device=device)}
         for step in range(T):
             global_step += N
             obs_buf[step], done_buf[step] = next_obs, next_done
@@ -202,6 +212,11 @@ def main():
                     ended[k] += float(info[key][done].float().sum())
                 ended["valid"] += float(info["valid_fraction"][done & info["success"]].sum())
                 ended["nonfinite"] += int(info["nonfinite"].sum())
+                if len(tasks) > 1:
+                    ended["by_task"].index_put_((info["task"][done].long(), torch.zeros_like(info["task"][done]).long()),
+                                                info["success"][done].float(), accumulate=True)
+                    ended["by_task"].index_put_((info["task"][done].long(), torch.ones_like(info["task"][done]).long()),
+                                                torch.ones(int(done.sum()), device=device), accumulate=True)
 
         with torch.no_grad():
             next_value = agent.get_value(next_obs).flatten()
@@ -244,10 +259,14 @@ def main():
         row = [it, global_step, sps, ended["n"], ended["success"] / n, ended["spill"] / n, ended["timeout"] / n,
                ended["valid"] / max(ended["success"], 1), float(std.min()), float(std.mean()), float(entropy.mean().detach()),
                float(approx_kl), float(v_loss), float(pg_loss), ended["nonfinite"]]
+        if len(tasks) > 1:
+            by = ended["by_task"].cpu().numpy()
+            row += [by[k, 0] / max(by[k, 1], 1) for k in range(len(tasks))]
         log.writerow(row)
         if it % 10 == 0 or it == iterations:
             print(f"it {it}/{iterations} step {global_step:,} sps {sps:,} | episodes {ended['n']} success {row[4]:.3f} "
-                  f"spill {row[5]:.3f} timeout {row[6]:.3f} | std min {row[8]:.3f} | kl {row[11]:.4f} | nonfinite {ended['nonfinite']}", flush=True)
+                  f"spill {row[5]:.3f} timeout {row[6]:.3f} | std min {row[8]:.3f} | kl {row[11]:.4f} | nonfinite {ended['nonfinite']}"
+                  + ("".join(f" | {t} {v:.3f}" for t, v in zip(tasks, row[15:])) if len(tasks) > 1 else ""), flush=True)
         progress.flush()
         if args.save_every and it % args.save_every == 0:
             checkpoint(it)
