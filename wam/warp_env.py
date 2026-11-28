@@ -13,6 +13,7 @@ Differences from the C env, all deliberate:
 
 Training only: evaluation of reported policies stays in C MuJoCo on frozen v2 (sim-backend decision, log.md).
 """
+from contextlib import nullcontext as _null
 from pathlib import Path
 
 import mujoco
@@ -37,15 +38,40 @@ LEVELER_ITERATIONS = 3
 BATCHED = ("body_pos", "body_quat", "geom_friction", "geom_size", "geom_rbound", "geom_aabb")
 
 
-def start_pool(n, seed, path=None):
-    """n starts drawn by the C env (TaskEnv F, G3 kwargs): state after reset and the per-episode model values."""
-    if path is not None and Path(path).exists():
-        return dict(np.load(path))
+@wp.kernel
+def _accumulate_forces(nacon: wp.array(dtype=int), geom: wp.array(dtype=wp.vec2i), worldid: wp.array(dtype=int),
+                       force: wp.array(dtype=wp.spatial_vector), group: wp.array(dtype=int), mover: wp.array(dtype=int),
+                       obj: int, scene_column: int, out: wp.array2d(dtype=float)):
+    """TaskEnv._contact_forces for one substep, all worlds: normal force on the mover per arm group, then arm on
+    anything else (scene_column); tray-object contacts skipped."""
+    i = wp.tid()
+    if i >= nacon[0]:
+        return
+    g1, g2 = geom[i][0], geom[i][1]
+    if g1 == obj or g2 == obj:
+        return
+    a1, a2 = group[g1], group[g2]
+    column = -1
+    if mover[g1] == 1 and a2 >= 0:
+        column = a2
+    elif mover[g2] == 1 and a1 >= 0:
+        column = a1
+    elif a1 >= 0 or a2 >= 0:
+        column = scene_column
+    if column >= 0:
+        wp.atomic_add(out, worldid[i], column, force[i][0])
+
+
+POOL_KEYS = ("qpos", "qvel", "q_target", "goal", "fixture_pos", "fixture_quat", "friction", "box_size", "box_rbound",
+             "box_aabb")
+
+
+def _draw_starts(args):
+    seeds = args
     env = TaskEnv(task="F", conditioning="contact_fk")
-    rows = {k: [] for k in ("qpos", "qvel", "q_target", "goal", "fixture_pos", "fixture_quat", "friction",
-                            "box_size", "box_rbound", "box_aabb")}
-    for i in range(n):
-        env.reset(seed=seed + i)
+    rows = {k: [] for k in POOL_KEYS}
+    for s in seeds:
+        env.reset(seed=int(s))
         m, d = env.model, env.data
         rows["qpos"].append(d.qpos.copy()), rows["qvel"].append(d.qvel.copy())
         rows["q_target"].append(env.q_target.copy()), rows["goal"].append(env.goal.copy())
@@ -55,7 +81,22 @@ def start_pool(n, seed, path=None):
         rows["box_size"].append(m.geom_size[env.box_geom].copy())
         rows["box_rbound"].append(m.geom_rbound[env.box_geom])
         rows["box_aabb"].append(m.geom_aabb[env.box_geom].reshape(2, 3).copy())
-    pool = {k: np.array(v) for k, v in rows.items()}
+    return {k: np.array(v) for k, v in rows.items()}
+
+
+def start_pool(n, seed, path=None, workers=1):
+    """n starts drawn by the C env (TaskEnv F, G3 kwargs), start i with reset seed `seed + i`: the state after reset
+    and the per-episode model values. Split over `workers` processes with the same result. Cached at `path`."""
+    if path is not None and Path(path).exists():
+        return dict(np.load(path))
+    seeds = np.arange(seed, seed + n)
+    if workers > 1:
+        import multiprocessing as mp
+        with mp.get_context("spawn").Pool(workers) as p:
+            parts = p.map(_draw_starts, np.array_split(seeds, workers))
+    else:
+        parts = [_draw_starts(seeds)]
+    pool = {k: np.concatenate([part[k] for part in parts]) for k in POOL_KEYS}
     if path is not None:
         np.savez(path, **pool)
     return pool
@@ -74,6 +115,11 @@ class WarpFamilyEnv:
             self.ik = mjw.put_data(m, c.data, nworld=nworld, nconmax=nconmax, njmax=njmax)
             self.contact_ids = wp.array(np.arange(self.d.naconmax, dtype=np.int32), dtype=int)
             self.contact_force = wp.zeros(self.d.naconmax, dtype=wp.spatial_vector)
+            self.force_sum = wp.zeros((nworld, len(CONTACT_GROUPS) + 1), dtype=float)
+            self.group_wp = wp.array(np.asarray(c.geom_group, dtype=np.int32), dtype=int)
+            mover_mask = np.zeros(m.ngeom, dtype=np.int32)
+            mover_mask[list(c.mover_geoms)] = 1
+            self.mover_wp = wp.array(mover_mask, dtype=int)
         t = wp.to_torch
         d, ik, mw = self.d, self.ik, self.m
         self.qpos, self.qvel, self.ctrl = t(d.qpos), t(d.qvel), t(d.ctrl)
@@ -83,6 +129,7 @@ class WarpFamilyEnv:
         self.con_geom, self.con_world, self.nacon = t(d.contact.geom), t(d.contact.worldid), t(d.nacon)
         self.con_force = t(self.contact_force)
         self.ik_qpos, self.ik_xmat, self.ik_xaxis = t(ik.qpos), t(ik.xmat), t(ik.xaxis)
+        self.force_sum_t = t(self.force_sum)
         self.body_pos, self.body_quat, self.geom_friction = t(mw.body_pos), t(mw.body_quat), t(mw.geom_friction)
         self.geom_size, self.geom_rbound, self.geom_aabb = t(mw.geom_size), t(mw.geom_rbound), t(mw.geom_aabb)
 
@@ -107,6 +154,19 @@ class WarpFamilyEnv:
         self.cap_t = torch.linspace(-1.0, 1.0, REACH_POINTS, device=dev)
         self.wrist_joints = torch.arange(4, 7, device=dev)
         self.gen = torch.Generator(device=dev).manual_seed(seed)
+        # One stream for torch and Warp, so torch's writes (ctrl, resets) are ordered before Warp's launches; then the
+        # 20-substep loop (physics, contact forces, accumulation) is captured once as a CUDA graph.
+        # CUDA cannot capture a graph on the legacy default stream, so torch moves to a dedicated stream for the rest of
+        # the process (the trainer's torch work included) and Warp shares it.
+        self.stream = None
+        if dev.type == "cuda":
+            torch_stream = torch.cuda.Stream(dev)
+            torch.cuda.set_stream(torch_stream)
+            self.stream = wp.stream_from_torch(torch_stream)
+        with wp.ScopedDevice(device), wp.ScopedStream(self.stream) if self.stream else _null():
+            with wp.ScopedCapture() as capture:
+                self._substeps()
+        self.substep_graph = capture.graph
 
         n = nworld
         z = lambda *s: torch.zeros(n, *s, device=dev)
@@ -234,8 +294,18 @@ class WarpFamilyEnv:
             self.ik_qpos[:, 4:7] = torch.minimum(torch.maximum(self.ik_qpos[:, 4:7] + step, lo), hi)
         return torch.minimum(torch.maximum(self.ik_qpos[:, 4:7], self.ctrl_lo[4:]), self.ctrl_hi[4:])
 
+    def _substeps(self):
+        """FRAME_SKIP physics steps with TaskEnv's per-substep contact-force sum (captured as one graph)."""
+        self.force_sum.zero_()
+        for _ in range(FRAME_SKIP):
+            mjw.step(self.m, self.d)
+            mjw.contact_force(self.m, self.d, self.contact_ids, False, self.contact_force)
+            wp.launch(_accumulate_forces, dim=self.d.naconmax,
+                      inputs=[self.d.nacon, self.d.contact.geom, self.d.contact.worldid, self.contact_force, self.group_wp,
+                              self.mover_wp, self.ids["obj"], len(CONTACT_GROUPS), self.force_sum])
+
     def _forces(self):
-        """Normal force on the mover from each arm group, then arm force on anything else, as TaskEnv._contact_forces."""
+        """Torch reference for one substep (parity checks): same rule as _accumulate_forces."""
         mjw.contact_force(self.m, self.d, self.contact_ids, False, self.contact_force)
         valid = torch.arange(len(self.con_world), device=self.device) < self.nacon[0]
         g1, g2 = self.con_geom[:, 0].long(), self.con_geom[:, 1].long()
@@ -261,11 +331,9 @@ class WarpFamilyEnv:
         self.ctrl.copy_(self.q_target)
 
         distance_before = self._distance()
-        forces = torch.zeros(self.n, len(CONTACT_GROUPS) + 1, device=self.device)
-        for _ in range(FRAME_SKIP):
-            mjw.step(self.m, self.d)
-            forces += self._forces()
-        forces /= FRAME_SKIP
+        with wp.ScopedStream(self.stream) if self.stream else _null():
+            wp.capture_launch(self.substep_graph)
+        forces = self.force_sum_t / FRAME_SKIP
         distance = self._distance()
         closed = distance_before - distance
 

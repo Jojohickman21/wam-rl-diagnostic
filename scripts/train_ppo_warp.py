@@ -49,6 +49,7 @@ def parse():
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--pool-size", type=int, default=20_000)
+    p.add_argument("--pool-workers", type=int, default=4, help="processes drawing the start pool (cached per seed)")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--save-every", type=int, default=25, help="iterations between resumable checkpoints (ckpt.pt)")
     return p.parse_args()
@@ -111,7 +112,7 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     pool_path = Path(f"runs/warp_pool_F_{args.pool_size}_{args.seed}.npz")
     t0 = time.time()
-    pool = start_pool(args.pool_size, seed=1_000_000 + 100_000 * args.seed, path=pool_path)
+    pool = start_pool(args.pool_size, seed=1_000_000 + 100_000 * args.seed, path=pool_path, workers=args.pool_workers)
     print(f"start pool: {len(pool['qpos'])} starts ({time.time() - t0:.0f} s)", flush=True)
 
     env = WarpFamilyEnv(args.num_envs, pool, device=args.device, seed=args.seed)
