@@ -5,7 +5,7 @@ processes pooled) and runs it on a TaskEnv with actions sampled from the policy,
 The normalisation statistics stay frozen at their trained values (applied by hand, as
 NormalizeObservation does with epsilon 1e-8, then clipped to ±10), so unseen tasks cannot shift them.
 
-    python scripts/eval_policy.py <train env id> <seed> <task> [episodes] [yaw spread, degrees] [det]
+    python scripts/eval_policy.py <train env id> <seed> <task> [episodes] [yaw spread, degrees] [det] [--exp <name>]
 
 With `det`, the policy's mean action is used instead of a sample (output line says so).
 
@@ -25,6 +25,11 @@ import wam  # noqa: F401,E402
 from train_ppo import Agent  # noqa: E402
 from wam.tasks import TaskEnv  # noqa: E402
 
+exp = "train_ppo"
+if "--exp" in sys.argv:  # runs saved as runs/<env>__<exp>__<seed>__*/<exp>.cleanrl_model (CARC arms, Warp PPO)
+    i = sys.argv.index("--exp")
+    exp = sys.argv[i + 1]
+    del sys.argv[i:i + 2]
 train_env, seed, task = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 episodes = int(sys.argv[4]) if len(sys.argv) > 4 else 200
 yaw_spread = float(sys.argv[5]) if len(sys.argv) > 5 else 20.0
@@ -40,7 +45,7 @@ raw = gym.wrappers.TimeLimit(
     TaskEnv(task=task, outcome_reward=outcome, cabinet_spread=(0.1, np.radians(yaw_spread)), labels=labels,
             conditioning=conditioning), 250
 )
-path = glob.glob(f"runs/{train_env}__train_ppo__{seed}__*/train_ppo.cleanrl_model")[0]
+path = sorted(glob.glob(f"runs/{train_env}__{exp}__{seed}__*/{exp}.cleanrl_model"))[-1]
 stats = np.load(Path(path).with_name("obs_rms.npz"))
 weights = stats["count"][:, None]
 total = weights.sum()
